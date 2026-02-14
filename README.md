@@ -47,7 +47,7 @@ Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamen
 
 | Script | Instalación | Uso |
 |--------|------------|-----|
-| **PASADOR** | [Instalar PASADOR](../../raw/main/PASADOR_VSaaS_ArcGIS.user.js) | Siempre activo |
+| **PASADOR** | [Instalar PASADOR](https://raw.githubusercontent.com/hypr-lupo/pasador-soga/main/Pasador%20VSaaS%20-%20ArcGIS.user.js)| Siempre activo |
 
 ### Paso 3 — Verificar
 
