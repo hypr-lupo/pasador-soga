@@ -1,4 +1,4 @@
-# VSaaS Tools — Automatización de Videovigilancia Municipal
+# pasador-soga
 
 Conjunto de userscripts para optimizar la operación del sistema de videovigilancia **VSaaS** (Video Surveillance as a Service) en entornos de seguridad municipal. Desarrollados para agilizar tareas repetitivas de monitoreo de alertas, navegación de cámaras y geolocalización en ArcGIS.
 
