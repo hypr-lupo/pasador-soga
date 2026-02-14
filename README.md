@@ -19,18 +19,8 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 - **W** — Abre la imagen de la alerta seleccionada
 - **A / D** — Navega entre imágenes de la alerta (anterior / siguiente)
 - **Ctrl+Q** — Busca la cámara en ArcGIS y abre el mapa centrado en su ubicación
-- **Clipboard automático** — Copia el código de cámara al portapapeles al cambiar de alerta
+- **Clipboard automático** — Copia el código de cámara al portapapeles al seleccionar una alerta
 - **Título de pestaña** — Muestra el destacamento y código de cámara activo en la pestaña del navegador
-
-### SOGA — Gestión de Estados *(circunstancias especiales)*
-
-Script complementario para el cambio rápido de estados de alertas. Activar solo cuando se requiera gestión de estados por teclado.
-
-**Funcionalidades:**
-
-- **S** — Cambia el estado a SIN NOVEDAD
-- **F** — Cambia el estado a F.POSITIVO con comentario FALSOPOS
-- **Q** — Ciclo inteligente: cualquier estado → HIKCENTRAL → CERRADO, con comentarios automáticos según el flujo
 
 ---
 
@@ -58,7 +48,6 @@ Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamen
 | Script | Instalación | Uso |
 |--------|------------|-----|
 | **PASADOR** | [Instalar PASADOR](../../raw/main/PASADOR_VSaaS_ArcGIS.user.js) | Siempre activo |
-| **SOGA** | [Instalar SOGA](../../raw/main/SOGA_VSaaS.user.js) | Activar según necesidad |
 
 ### Paso 3 — Verificar
 
@@ -97,18 +86,6 @@ Para forzar una actualización manual: Tampermonkey → Utilidades → Verificar
 ```
 
 > **Nota:** Las teclas solo funcionan cuando no hay un campo de texto enfocado. Si una tecla no responde, haz click en un área vacía de la página primero.
-
----
-
-## Estructura del repositorio
-
-```
-vsaas-tools/
-├── PASADOR_VSaaS_ArcGIS.user.js   ← Script principal
-├── SOGA_VSaaS.user.js             ← Script complementario
-├── README.md                       ← Este archivo
-└── LICENSE                         ← Licencia MIT
-```
 
 ---
 
