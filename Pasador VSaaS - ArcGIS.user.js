@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pasador VSaaS - ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
@@ -106,7 +106,7 @@
             ['QUINCHAMALI',      'CS1 - Quinchamalí'],
             ['CENTRO CIVICO',    'CS6 - El Golf'],
             ['EL GOLF',          'CS6 - El Golf'],
-            ['ANALITICA GENERAL','GENERAL']
+            ['ANALITICA GENERAL','ANAL GENERAL']
         ]);
 
         let ultimoCodigo = null;
