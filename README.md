@@ -52,9 +52,11 @@ Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamen
 ### Paso 3 — Verificar
 
 1. Abrir VSaaS y seleccionar una alerta
-2. Presionar **W** → debe abrir la imagen
-3. Presionar **Ctrl+Q** → debe abrir ArcGIS con la ubicación de la cámara
-4. Verificar que el título de la pestaña muestre el destacamento y código
+2. Verificar que el título de la pestaña muestre el destacamento y código
+3. Presionar **W** → debe abrir la imagen
+4. Presionar **Ctrl+Q** → debe abrir ArcGIS con la ubicación de la cámara
+
+Ante cualquier eventualidad actualizar la página con F5.
 
 ---
 
