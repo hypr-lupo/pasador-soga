@@ -9,8 +9,8 @@
 // @match        https://suite.vsaas.ai/*
 // @match        https://suite-back.vsaas.ai/*
 // @grant        none
-// @updateURL    https://raw.githubusercontent.com/hypr-lupo/pasador-soga/main/SOGA_VSaaS.user.js
-// @downloadURL  https://raw.githubusercontent.com/hypr-lupo/pasador-soga/main/SOGA_VSaaS.user.js
+// @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/SOGA%20VSaaS.user.js
+// @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/SOGA%20VSaaS.user.js
 // ==/UserScript==
 
 /*
