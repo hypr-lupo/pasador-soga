@@ -76,12 +76,6 @@ Para forzar una actualización manual: Tampermonkey → Utilidades → Verificar
 ║  A         Imagen anterior                           ║
 ║  D         Imagen siguiente                          ║
 ║  Ctrl+Q    Buscar cámara en ArcGIS                   ║
-╠══════════════════════════════════════════════════════╣
-║                 VSaaS - SOGA                         ║
-╠══════════════════════════════════════════════════════╣
-║  S         Estado → SIN NOVEDAD                      ║
-║  F         Estado → F.POSITIVO + FALSOPOS            ║
-║  Q         Estado → HIKCENTRAL ↔ CERRADO             ║
 ╚══════════════════════════════════════════════════════╝
 ```
 
