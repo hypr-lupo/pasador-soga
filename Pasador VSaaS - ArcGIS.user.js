@@ -106,7 +106,7 @@
             ['QUINCHAMALI',      'CS1 - Quinchamalí'],
             ['CENTRO CIVICO',    'CS6 - El Golf'],
             ['EL GOLF',          'CS6 - El Golf'],
-            ['ANALITICA GENERAL','ANAL GENERAL']
+            ['ANALITICA GENERAL','GENERAL']
         ]);
 
         let ultimoCodigo = null;
