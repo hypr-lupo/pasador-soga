@@ -60,14 +60,6 @@ Ante cualquier eventualidad actualizar la página con F5.
 
 ---
 
-## Actualizaciones
-
-Los scripts se actualizan automáticamente a través de Tampermonkey. Cuando se publique una nueva versión en este repositorio, Tampermonkey la descargará en segundo plano (verificación diaria por defecto).
-
-Para forzar una actualización manual: Tampermonkey → Utilidades → Verificar actualizaciones.
-
----
-
 ## Referencia rápida de teclas
 
 ```
@@ -101,6 +93,13 @@ Ir a Tampermonkey → Dashboard → seleccionar el script → pestaña Configura
 
 ---
 
+## Actualizaciones
+
+Los scripts se actualizan automáticamente a través de Tampermonkey. Cuando se publique una nueva versión en este repositorio, Tampermonkey la descargará en segundo plano (verificación diaria por defecto).
+
+Para forzar una actualización manual: Tampermonkey → Utilidades → Verificar actualizaciones.
+
+---
 ## Notas legales
 
 Este software es una herramienta de productividad personal desarrollada de forma independiente. No modifica, altera ni compromete los sistemas VSaaS ni ArcGIS; únicamente automatiza interacciones de interfaz de usuario que el operador realizaría manualmente.
