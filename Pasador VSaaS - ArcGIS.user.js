@@ -13,8 +13,8 @@
 // @grant        GM_getValue
 // @grant        GM_setClipboard
 // @grant        GM_openInTab
-// @updateURL    https://raw.githubusercontent.com/hypr-lupo/pasador-soga/main/Pasador%20VSaaS%20-%20ArcGIS.user.js
-// @downloadURL  https://raw.githubusercontent.com/hypr-lupo/pasador-soga/main/Pasador%20VSaaS%20-%20ArcGIS.user.js
+// @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Pasador%20VSaaS%20-%20ArcGIS.user.js
+// @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Pasador%20VSaaS%20-%20ArcGIS.user.js
 // ==/UserScript==
 
 /*
