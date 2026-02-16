@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leo
 // @match        https://seguridad.lascondes.cl/incidents*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
+// @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
 // ==/UserScript==
 
 (function () {
