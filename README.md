@@ -52,10 +52,10 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 
 Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamente que es un userscript y mostrará un diálogo de instalación.
 
-| Script       | Instalación | Uso            |
-|--------------|------------|----------------|
-| **PASADOR**  | [Instalar PASADOR](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/VSaaS%20Pasador%20ArcGIS.user.js) | Siempre activo |
-| **MÁSCARA**  | [Instalar MÁSCARA](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20Mascara.user.js) | Según necesidad |
+| Script       | Instalación |
+|--------------|------------|
+| **PASADOR**  | [Instalar PASADOR](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/VSaaS%20Pasador%20ArcGIS.user.js) |
+| **MÁSCARA**  | [Instalar MÁSCARA](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20Mascara.user.js) |
 
 
 ### Paso 3 — Verificar
