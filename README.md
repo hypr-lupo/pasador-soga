@@ -10,7 +10,7 @@ Conjunto de userscripts para optimizar la operación del sistema de videovigilan
 
 ## Scripts disponibles
 
-### PASADOR — Navegación y Geolocalización *(uso diario)*
+### PASADOR — Navegación y Geolocalización
 
 Script principal que integra navegación rápida de alertas con búsqueda automática de ubicación de cámaras en ArcGIS.
 
@@ -21,6 +21,13 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 - **Ctrl+Q** — Busca la cámara en ArcGIS y abre el mapa centrado en su ubicación
 - **Clipboard automático** — Copia el código de cámara al portapapeles al seleccionar una alerta
 - **Título de pestaña** — Muestra el destacamento y código de cámara activo en la pestaña del navegador
+
+
+### Mascara — Navegación y Geolocalización  
+- Apartado que recopila la última hora de procedimientos del Sistema
+- Funcionalidades de fijado, ignorado y contador de pendientes y cerrados  
+- Colorizacion de procedimientos en función de tipificación
+- Botón de localización rápida para ArcGIS y Google Maps  
 
 ---
 
