@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pasador VSaaS - ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
