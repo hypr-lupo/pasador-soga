@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VSaaS Pasador ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      2.9
+// @version      2.10
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
@@ -19,11 +19,11 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * PASADOR v2.5 - Puente VSaaS ↔ ArcGIS + QoL
+ * PASADOR v2.10 - Puente VSaaS ↔ ArcGIS + QoL
  * Copyright (c) 2026-2027 Leonardo Navarro
  * Licensed under MIT License
  *
- * v2.5 - Robustecimiento:
+ * v2.10 - Robustecimiento:
  *   - Observer auto-reconectable (detecta nodos huérfanos)
  *   - Centinela DOM: vigila destrucción/recreación del h3 por Angular
  *   - Polling de respaldo cada 2s como fallback del observer
