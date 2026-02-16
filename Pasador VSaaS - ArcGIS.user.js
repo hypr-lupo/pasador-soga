@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pasador VSaaS - ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      2.6
+// @version      2.9
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
@@ -30,6 +30,8 @@
  *   - Heartbeat: título se recalcula periódicamente
  *   - Ctrl+Q con triple fallback (clipboard → DOM → estado)
  *   - Observer escucha cambios en atributo title del h3
+ *   - ArcGIS sin búsqueda → modo pasivo (no toca título)
+ *   - pendingCamera se limpia al consumirse (no persiste entre sesiones)
  * ═══════════════════════════════════════════════════════════════════
  */
 
@@ -105,11 +107,11 @@
         const state = {
             codigo: null,
             destacamento: null,
-            h3Ref: null,       // nodo h3 actualmente observado
-            observer: null     // MutationObserver activo
+            h3Ref: null,
+            observer: null
         };
 
-        // ─── LECTURA FRESCA DEL DOM (nunca cacheada) ───
+        // ─── LECTURA FRESCA DEL DOM ───
 
         function codigoDesdeDom() {
             const h3 = document.querySelector('h3.ng-binding');
@@ -140,7 +142,6 @@
         }
 
         // ─── NÚCLEO: detectarCambios() ───
-        // Usado por observer, polling y heartbeat — lógica unificada
 
         function detectarCambios() {
             let cambio = false;
@@ -178,7 +179,6 @@
             const h3 = document.querySelector('h3.ng-binding');
             if (!h3) return false;
 
-            // Ya observando este nodo y sigue en el DOM
             if (state.h3Ref === h3 && document.contains(h3) && state.observer) {
                 return true;
             }
@@ -187,7 +187,6 @@
             state.h3Ref = h3;
 
             state.observer = new MutationObserver(() => {
-                // Si Angular destruyó el nodo, desconectar limpiamente
                 if (!document.contains(h3)) {
                     log('⚠️ h3 huérfano, desconectando observer');
                     desconectarObserver();
@@ -196,7 +195,6 @@
                 detectarCambios();
             });
 
-            // CLAVE: escuchar también cambios en atributo 'title'
             state.observer.observe(h3, {
                 childList: true,
                 characterData: true,
@@ -206,11 +204,11 @@
             });
 
             log('👁️ Observer conectado');
-            detectarCambios(); // detección inmediata al conectar
+            detectarCambios();
             return true;
         }
 
-        // ─── CENTINELA: vigila destrucción/recreación del h3 ───
+        // ─── CENTINELA ───
 
         function iniciarCentinela() {
             new MutationObserver(() => {
@@ -222,13 +220,13 @@
             }).observe(document.body, { childList: true, subtree: true });
         }
 
-        // ─── POLLING DE RESPALDO (cada 2s) ───
+        // ─── POLLING DE RESPALDO ───
 
         function iniciarPolling() {
             setInterval(() => detectarCambios(), CONFIG.POLL_INTERVAL);
         }
 
-        // ─── HEARTBEAT: verifica salud + recalcula título (cada 5s) ───
+        // ─── HEARTBEAT ───
 
         function iniciarHeartbeat() {
             setInterval(() => {
@@ -260,13 +258,11 @@
             log('🎹 Ctrl+Q activado');
             let codigo = null;
 
-            // 1. Portapapeles (compatibilidad con SOGA)
             try {
                 codigo = extraerCodigo(await navigator.clipboard.readText());
                 if (codigo) log('✓ Desde portapapeles:', codigo);
             } catch { /* sin permisos */ }
 
-            // 2. DOM directo
             if (!codigo) {
                 codigo = codigoDesdeDom();
                 if (codigo) {
@@ -275,7 +271,6 @@
                 }
             }
 
-            // 3. Estado interno (último código detectado)
             if (!codigo && state.codigo) {
                 codigo = state.codigo;
                 log('✓ Desde estado:', codigo);
@@ -337,12 +332,12 @@
             }
         }, { capture: true, passive: false });
 
-        // ─── INICIALIZACIÓN: 4 capas de resiliencia ───
+        // ─── INICIALIZACIÓN ───
 
-        conectarObserver();     // Capa 1: Observer directo
-        iniciarCentinela();     // Capa 2: Vigila DOM por reconexión
-        iniciarPolling();       // Capa 3: Fallback cada 2s
-        iniciarHeartbeat();     // Capa 4: Verificación de salud cada 5s
+        conectarObserver();
+        iniciarCentinela();
+        iniciarPolling();
+        iniciarHeartbeat();
 
         console.log('%c[PASADOR] 📌 v2.5 ACTIVO ✓', 'color: #2196F3; font-weight: bold; font-size: 14px');
         console.log('[PASADOR] W → Imagen | A/D → Navegar | Ctrl+Q → ArcGIS');
@@ -350,51 +345,52 @@
     }
 
     // =================================================================
-    // MÓDULO ARCGIS - PUENTE + INYECCIÓN (sin cambios funcionales)
+    // MÓDULO ARCGIS - PUENTE + INYECCIÓN
     // =================================================================
     if (SITE.isArcGIS) {
         log('🗺️ ArcGIS detectado');
 
-        document.title = '⏳ Cargando ubicación...';
-
-        const titleEl = document.querySelector('title');
-        if (titleEl) {
-            new MutationObserver(() => {
-                if (document.title.includes('Cámaras 202')) {
-                    document.title = '⏳ Cargando ubicación...';
-                }
-            }).observe(titleEl, { childList: true, characterData: true, subtree: true });
-        }
-
+        // Leer y LIMPIAR pendingCamera inmediatamente (consumir una sola vez)
         const pendiente = GM_getValue('pendingCamera', null);
+        GM_setValue('pendingCamera', null); // <── CLAVE: limpiar siempre
+
+        let codigoPendiente = null;
+
         if (pendiente?.codigo) {
             const edad = Date.now() - pendiente.timestamp;
             if (edad < CONFIG.EXPIRY) {
-                log('✓ Código válido:', pendiente.codigo);
-                const bridge = document.createElement('div');
-                bridge.id = 'arcgis-camera-data';
-                bridge.style.display = 'none';
-                bridge.dataset.cameraCode = pendiente.codigo;
-                bridge.dataset.timestamp = pendiente.timestamp;
-                document.body.appendChild(bridge);
+                codigoPendiente = pendiente.codigo;
+                log('✓ Código pendiente consumido:', codigoPendiente);
             } else {
-                log('⏰ Código expirado');
-                GM_setValue('pendingCamera', null);
+                log('⏰ Código expirado, ignorado');
             }
         }
 
+        // Solo crear bridge si hay código válido
+        if (codigoPendiente) {
+            const bridge = document.createElement('div');
+            bridge.id = 'arcgis-camera-data';
+            bridge.style.display = 'none';
+            bridge.dataset.cameraCode = codigoPendiente;
+            document.body.appendChild(bridge);
+        }
+
+        // ─────────────────────────────────────────────
+        // SCRIPT INYECTADO (contexto de página)
+        // ─────────────────────────────────────────────
+
         function arcgisInjected(featureServerUrl, zoomLevel) {
-            var tituloDeseado = '⏳ Cargando ubicación...';
-            var observerActivo = true;
+            var tituloDeseado = null;
+            var observerActivo = false;
 
             function log() {
                 var args = Array.prototype.slice.call(arguments);
                 console.log.apply(console, ['[ArcGIS-Injected]'].concat(args));
             }
 
-            document.title = tituloDeseado;
+            // Observer de título: SOLO activo durante búsquedas
             var titleObs = new MutationObserver(function() {
-                if (observerActivo && document.title !== tituloDeseado) {
+                if (observerActivo && tituloDeseado && document.title !== tituloDeseado) {
                     document.title = tituloDeseado;
                 }
             });
@@ -405,6 +401,12 @@
                 tituloDeseado = titulo;
                 document.title = titulo;
                 if (final) observerActivo = false;
+            }
+
+            function activarProteccionTitulo(titulo) {
+                tituloDeseado = titulo;
+                document.title = titulo;
+                observerActivo = true;
             }
 
             function esperarMapaListo(cb) {
@@ -516,30 +518,30 @@
                 setTimeout(function() { d.remove(); }, 4000);
             }
 
+            // ─── LÓGICA PRINCIPAL ───
+
             var bridge = document.getElementById('arcgis-camera-data');
-            if (!bridge) { setTitulo('Portal de ArcGIS', true); return; }
 
-            var codigo = bridge.dataset.cameraCode;
-            var ts = parseInt(bridge.dataset.timestamp);
-
-            if (codigo && (Date.now() - ts) < 120000) {
-                setTitulo('⏳ Cargando ' + codigo + '...');
+            if (bridge) {
+                // Emanó desde VSaaS → buscar cámara
+                var codigo = bridge.dataset.cameraCode;
+                activarProteccionTitulo('⏳ Cargando ' + codigo + '...');
                 esperarMapaListo(function() {
-                    setTitulo('🔍 Buscando ' + codigo + '...');
+                    activarProteccionTitulo('🔍 Buscando ' + codigo + '...');
                     setTimeout(function() { buscarCamara(codigo); }, 2000);
                 });
             } else {
-                bridge.remove();
-                setTitulo('Portal de ArcGIS', true);
+                // Abierto desde marcador → modo pasivo, no tocar nada
+                log('Modo pasivo (sin búsqueda pendiente)');
             }
 
+            // Ctrl+Shift+Q manual siempre disponible (marcador o VSaaS)
             document.addEventListener('keydown', function(e) {
                 if (e.ctrlKey && e.shiftKey && e.key === 'Q') {
                     navigator.clipboard.readText().then(function(texto) {
                         var match = texto.match(/\b([A-Z0-9]{2,10}-\d{1,3})\b/);
                         if (match) {
-                            setTitulo('🔍 ' + match[1] + '...', false);
-                            observerActivo = true;
+                            activarProteccionTitulo('🔍 ' + match[1] + '...');
                             esperarMapaListo(function() { buscarCamara(match[1]); });
                         } else {
                             mostrarNotif('No hay código válido en portapapeles', true);
@@ -548,9 +550,10 @@
                 }
             });
 
-            log('✅ Módulo inicializado');
+            log('✅ Módulo inicializado' + (bridge ? ' (búsqueda activa)' : ' (pasivo)'));
         }
 
+        // Inyectar siempre (para que Ctrl+Shift+Q funcione en modo pasivo también)
         const s = document.createElement('script');
         s.textContent = '(' + arcgisInjected.toString() + ')(' +
             JSON.stringify(CONFIG.FEATURESERVER_URL) + ',' + CONFIG.ZOOM_LEVEL + ')';
