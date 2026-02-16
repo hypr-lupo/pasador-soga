@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Pasador VSaaS - ArcGIS
+// @name         VSaaS Pasador ArcGIS
 // @namespace    http://tampermonkey.net/
 // @version      2.9
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
