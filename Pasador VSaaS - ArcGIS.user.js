@@ -19,27 +19,22 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * PASADOR - Puente VSaaS ↔ ArcGIS + QoL
+ * PASADOR v2.5 - Puente VSaaS ↔ ArcGIS + QoL
  * Copyright (c) 2026-2027 Leonardo Navarro
- *
  * Licensed under MIT License
  *
- * Funcionalidades de calidad de vida instaladas, F5 en el VSaaS.
- *
- * INSTRUCCIONES para el pasador:
- * Verificar ArcGis logeado
- * Instalar Tampermonkey, otorgar Permitir secuencias en Administrar extensión, F5 en el VSaaS.
- * seleccionar alerta y presionar Ctrl-Q ;)
- *
+ * v2.5 - Robustecimiento:
+ *   - Observer auto-reconectable (detecta nodos huérfanos)
+ *   - Centinela DOM: vigila destrucción/recreación del h3 por Angular
+ *   - Polling de respaldo cada 2s como fallback del observer
+ *   - Heartbeat: título se recalcula periódicamente
+ *   - Ctrl+Q con triple fallback (clipboard → DOM → estado)
+ *   - Observer escucha cambios en atributo title del h3
  * ═══════════════════════════════════════════════════════════════════
  */
 
 (function () {
     'use strict';
-
-    // ═══════════════════════════════════════════════════
-    // CONFIGURACIÓN
-    // ═══════════════════════════════════════════════════
 
     const CONFIG = {
         ARCGIS_URL: 'https://arcgismlc.lascondes.cl/portal/apps/webappviewer/index.html?id=118513d990134fcbb9196ac7884cfb8c',
@@ -47,6 +42,8 @@
         ZOOM_LEVEL: 18,
         COOLDOWN: 5000,
         EXPIRY: 120000,
+        POLL_INTERVAL: 2000,
+        HEARTBEAT: 5000,
         DEBUG: true
     };
 
@@ -61,10 +58,6 @@
         ? (...a) => console.log('[PASADOR]', ...a)
         : () => {};
 
-    // ═══════════════════════════════════════════════════
-    // UTILIDADES COMPARTIDAS
-    // ═══════════════════════════════════════════════════
-
     function extraerCodigo(texto) {
         return texto?.match(CODIGO_RE)?.[1] ?? null;
     }
@@ -77,12 +70,12 @@
     }
 
     // =================================================================
-    // MÓDULO VSAAS (WAD + Ctrl+Q)
+    // MÓDULO VSAAS (WAD + Clipboard + Título + Ctrl+Q)
     // =================================================================
     if (SITE.isVSaaS) {
         log('✅ VSaaS detectado');
 
-        // Liberar foco de select2 tras clicks (post-interacción, no durante)
+        // Liberar foco de select2 tras clicks
         document.addEventListener('click', () => {
             setTimeout(() => {
                 const el = document.activeElement;
@@ -94,9 +87,7 @@
             }, 150);
         }, true);
 
-        // ─────────────────────────────────────────────
-        // DESTACAMENTOS
-        // ─────────────────────────────────────────────
+        // ─── DESTACAMENTOS ───
 
         const DESTACAMENTOS = new Map([
             ['SAN CARLOS',       'CS3 - San Carlos'],
@@ -109,26 +100,23 @@
             ['ANALITICA GENERAL','ANAL GENERAL']
         ]);
 
-        let ultimoCodigo = null;
-        let ultimoDestacamento = null;
-        let observerActivo = false;
+        // ─── ESTADO CENTRAL ───
 
-        // ─────────────────────────────────────────────
-        // EXTRAER CÓDIGO DESDE H3
-        // ─────────────────────────────────────────────
+        const state = {
+            codigo: null,
+            destacamento: null,
+            h3Ref: null,       // nodo h3 actualmente observado
+            observer: null     // MutationObserver activo
+        };
+
+        // ─── LECTURA FRESCA DEL DOM (nunca cacheada) ───
 
         function codigoDesdeDom() {
             const h3 = document.querySelector('h3.ng-binding');
             return extraerCodigo(h3?.getAttribute('title') || h3?.innerText);
         }
 
-        // ─────────────────────────────────────────────
-        // OBTENER DESTACAMENTO
-        // ─────────────────────────────────────────────
-
         function obtenerDestacamento() {
-            if (ultimoDestacamento) return ultimoDestacamento;
-
             for (const a of document.querySelectorAll('a.ng-binding')) {
                 const texto = a.innerText
                     ?.normalize('NFD')
@@ -136,7 +124,6 @@
                     .toUpperCase()
                     .trim();
                 if (!texto) continue;
-
                 for (const [clave, valor] of DESTACAMENTOS) {
                     if (texto.includes(clave)) return valor;
                 }
@@ -144,50 +131,115 @@
             return null;
         }
 
-        // ─────────────────────────────────────────────
-        // TÍTULO DE PESTAÑA
-        // ─────────────────────────────────────────────
-
         function actualizarTitulo() {
             const partes = [];
-            if (ultimoDestacamento) partes.push(ultimoDestacamento);
-            if (ultimoCodigo) partes.push(ultimoCodigo);
-            document.title = partes.length ? partes.join(' | ') : 'VSaaS';
+            if (state.destacamento) partes.push(state.destacamento);
+            if (state.codigo) partes.push(state.codigo);
+            const titulo = partes.length ? partes.join(' | ') : 'VSaaS';
+            if (document.title !== titulo) document.title = titulo;
         }
 
-        // ─────────────────────────────────────────────
-        // OBSERVAR CAMBIO DE ALERTA (MutationObserver)
-        // ─────────────────────────────────────────────
+        // ─── NÚCLEO: detectarCambios() ───
+        // Usado por observer, polling y heartbeat — lógica unificada
 
-        function observarH3(h3) {
-            if (observerActivo) return;
-            observerActivo = true;
+        function detectarCambios() {
+            let cambio = false;
 
+            const codigo = codigoDesdeDom();
+            if (codigo && codigo !== state.codigo) {
+                state.codigo = codigo;
+                GM_setClipboard(codigo);
+                log('📋 Código copiado:', codigo);
+                cambio = true;
+            }
+
+            const dest = obtenerDestacamento();
+            if (dest && dest !== state.destacamento) {
+                state.destacamento = dest;
+                log('🏢 Destacamento:', dest);
+                cambio = true;
+            }
+
+            if (cambio) actualizarTitulo();
+            return cambio;
+        }
+
+        // ─── OBSERVER AUTO-RECONECTABLE ───
+
+        function desconectarObserver() {
+            if (state.observer) {
+                state.observer.disconnect();
+                state.observer = null;
+                state.h3Ref = null;
+            }
+        }
+
+        function conectarObserver() {
+            const h3 = document.querySelector('h3.ng-binding');
+            if (!h3) return false;
+
+            // Ya observando este nodo y sigue en el DOM
+            if (state.h3Ref === h3 && document.contains(h3) && state.observer) {
+                return true;
+            }
+
+            desconectarObserver();
+            state.h3Ref = h3;
+
+            state.observer = new MutationObserver(() => {
+                // Si Angular destruyó el nodo, desconectar limpiamente
+                if (!document.contains(h3)) {
+                    log('⚠️ h3 huérfano, desconectando observer');
+                    desconectarObserver();
+                    return;
+                }
+                detectarCambios();
+            });
+
+            // CLAVE: escuchar también cambios en atributo 'title'
+            state.observer.observe(h3, {
+                childList: true,
+                characterData: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ['title']
+            });
+
+            log('👁️ Observer conectado');
+            detectarCambios(); // detección inmediata al conectar
+            return true;
+        }
+
+        // ─── CENTINELA: vigila destrucción/recreación del h3 ───
+
+        function iniciarCentinela() {
             new MutationObserver(() => {
-                let cambio = false;
-
-                const codigo = extraerCodigo(h3.getAttribute('title') || h3.innerText);
-                if (codigo && codigo !== ultimoCodigo) {
-                    ultimoCodigo = codigo;
-                    GM_setClipboard(codigo);
-                    log('Código copiado:', codigo);
-                    cambio = true;
+                if (!state.observer || !state.h3Ref || !document.contains(state.h3Ref)) {
+                    if (conectarObserver()) {
+                        log('🔄 Centinela reconectó observer');
+                    }
                 }
-
-                const dest = obtenerDestacamento();
-                if (dest && dest !== ultimoDestacamento) {
-                    ultimoDestacamento = dest;
-                    log('Destacamento:', dest);
-                    cambio = true;
-                }
-
-                if (cambio) actualizarTitulo();
-            }).observe(h3, { childList: true, characterData: true, subtree: true });
+            }).observe(document.body, { childList: true, subtree: true });
         }
 
-        // ─────────────────────────────────────────────
-        // NAVEGACIÓN CCC: W / A / D
-        // ─────────────────────────────────────────────
+        // ─── POLLING DE RESPALDO (cada 2s) ───
+
+        function iniciarPolling() {
+            setInterval(() => detectarCambios(), CONFIG.POLL_INTERVAL);
+        }
+
+        // ─── HEARTBEAT: verifica salud + recalcula título (cada 5s) ───
+
+        function iniciarHeartbeat() {
+            setInterval(() => {
+                if (!state.observer || !state.h3Ref || !document.contains(state.h3Ref)) {
+                    conectarObserver();
+                }
+                actualizarTitulo();
+            }, CONFIG.HEARTBEAT);
+        }
+
+        // ─── NAVEGACIÓN WAD ───
 
         function abrirImagenAlerta() {
             const link = document.querySelector('a[href*="/api/sensors/"][href*="/download/"][target="_blank"]');
@@ -198,32 +250,35 @@
             const flecha = document.querySelector(dir === 'left' ? 'a.prev' : 'a.next');
             if (flecha && !flecha.classList.contains('disabled')) {
                 flecha.click();
-                log(`${dir === 'left' ? 'A' : 'D'} → Imagen ${dir === 'left' ? 'anterior' : 'siguiente'}`);
+                log(`${dir === 'left' ? 'A' : 'D'} → ${dir === 'left' ? 'anterior' : 'siguiente'}`);
             }
         }
 
-        // ─────────────────────────────────────────────
-        // MACRO Ctrl+Q → ARCGIS
-        // ─────────────────────────────────────────────
+        // ─── MACRO Ctrl+Q → ARCGIS ───
 
         async function macroCtrlQ() {
             log('🎹 Ctrl+Q activado');
-
             let codigo = null;
 
-            // 1. Prioridad: portapapeles (compatibilidad con SOGA activo)
+            // 1. Portapapeles (compatibilidad con SOGA)
             try {
                 codigo = extraerCodigo(await navigator.clipboard.readText());
-                if (codigo) log('✓ Código desde portapapeles:', codigo);
+                if (codigo) log('✓ Desde portapapeles:', codigo);
             } catch { /* sin permisos */ }
 
-            // 2. Fallback: DOM
+            // 2. DOM directo
             if (!codigo) {
                 codigo = codigoDesdeDom();
                 if (codigo) {
-                    log('✓ Código desde DOM:', codigo);
+                    log('✓ Desde DOM:', codigo);
                     GM_setClipboard(codigo);
                 }
+            }
+
+            // 3. Estado interno (último código detectado)
+            if (!codigo && state.codigo) {
+                codigo = state.codigo;
+                log('✓ Desde estado:', codigo);
             }
 
             if (!codigo) {
@@ -235,7 +290,6 @@
             const ultimo = GM_getValue('lastArcGISOpened', 0);
 
             if (ahora - ultimo < CONFIG.COOLDOWN) {
-                log('⚠️ ArcGIS abierto recientemente');
                 GM_setValue('pendingCamera', { codigo, timestamp: ahora });
                 crearNotif('⚠️ ArcGIS abierto - ' + codigo, true);
                 return;
@@ -243,17 +297,13 @@
 
             GM_setValue('pendingCamera', { codigo, timestamp: ahora });
             GM_setValue('lastArcGISOpened', ahora);
-
             crearNotif('🚀 Buscando: ' + codigo, false);
-            log('🌐 Abriendo ArcGIS...');
             GM_openInTab(CONFIG.ARCGIS_URL, { active: false, insert: true });
         }
 
-        // ─────────────────────────────────────────────
-        // LISTENER UNIFICADO DE TECLADO (VSaaS)
-        // ─────────────────────────────────────────────
+        // ─── LISTENER UNIFICADO DE TECLADO ───
 
-        const CCC_HANDLERS = {
+        const WAD_HANDLERS = {
             w: () => abrirImagenAlerta(),
             a: () => navegarImagen('left'),
             d: () => navegarImagen('right')
@@ -262,17 +312,14 @@
         document.addEventListener('keydown', (e) => {
             if (e.repeat) return;
 
-            // Si el foco está en un input/textarea real, no interceptar
             const el = document.activeElement;
             if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
 
-            // Si el foco quedó atrapado en select2 (dropdown cerrado), liberarlo
             if (el?.closest('.ui-select-container, .select2-container')) {
                 el.blur();
                 document.body.focus();
             }
 
-            // Ctrl+Q → ArcGIS
             if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'q') {
                 e.preventDefault();
                 e.stopPropagation();
@@ -280,10 +327,9 @@
                 return;
             }
 
-            // W/A/D → sin modificadores
             if (e.ctrlKey || e.shiftKey || e.altKey || e.metaKey) return;
 
-            const handler = CCC_HANDLERS[e.key.toLowerCase()];
+            const handler = WAD_HANDLERS[e.key.toLowerCase()];
             if (handler) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -291,42 +337,26 @@
             }
         }, { capture: true, passive: false });
 
-        // ─────────────────────────────────────────────
-        // INICIALIZACIÓN VSaaS
-        // ─────────────────────────────────────────────
+        // ─── INICIALIZACIÓN: 4 capas de resiliencia ───
 
-        function waitForEl(sel) {
-            return new Promise((resolve, reject) => {
-                const el = document.querySelector(sel);
-                if (el) return resolve(el);
+        conectarObserver();     // Capa 1: Observer directo
+        iniciarCentinela();     // Capa 2: Vigila DOM por reconexión
+        iniciarPolling();       // Capa 3: Fallback cada 2s
+        iniciarHeartbeat();     // Capa 4: Verificación de salud cada 5s
 
-                const obs = new MutationObserver((_, o) => {
-                    const found = document.querySelector(sel);
-                    if (found) { o.disconnect(); resolve(found); }
-                });
-                obs.observe(document.body, { childList: true, subtree: true });
-                setTimeout(() => { obs.disconnect(); reject(new Error('Timeout: ' + sel)); }, 30000);
-            });
-        }
-
-        waitForEl('h3.ng-binding')
-            .then(h3 => observarH3(h3))
-            .catch(err => console.warn('[PASADOR]', err.message));
-
-        console.log('%c[PASADOR] 📌 v2.0 ACTIVO ✓', 'color: #2196F3; font-weight: bold; font-size: 14px');
+        console.log('%c[PASADOR] 📌 v2.5 ACTIVO ✓', 'color: #2196F3; font-weight: bold; font-size: 14px');
         console.log('[PASADOR] W → Imagen | A/D → Navegar | Ctrl+Q → ArcGIS');
+        console.log('[PASADOR] 🛡️ Observer + Centinela + Polling + Heartbeat');
     }
 
     // =================================================================
-    // MÓDULO ARCGIS - PUENTE + INYECCIÓN
+    // MÓDULO ARCGIS - PUENTE + INYECCIÓN (sin cambios funcionales)
     // =================================================================
     if (SITE.isArcGIS) {
         log('🗺️ ArcGIS detectado');
 
-        // Título provisional
         document.title = '⏳ Cargando ubicación...';
 
-        // Observer para mantener título
         const titleEl = document.querySelector('title');
         if (titleEl) {
             new MutationObserver(() => {
@@ -336,7 +366,6 @@
             }).observe(titleEl, { childList: true, characterData: true, subtree: true });
         }
 
-        // Data bridge
         const pendiente = GM_getValue('pendingCamera', null);
         if (pendiente?.codigo) {
             const edad = Date.now() - pendiente.timestamp;
@@ -354,10 +383,6 @@
             }
         }
 
-        // ─────────────────────────────────────────────
-        // SCRIPT INYECTADO (contexto de página)
-        // ─────────────────────────────────────────────
-
         function arcgisInjected(featureServerUrl, zoomLevel) {
             var tituloDeseado = '⏳ Cargando ubicación...';
             var observerActivo = true;
@@ -367,7 +392,6 @@
                 console.log.apply(console, ['[ArcGIS-Injected]'].concat(args));
             }
 
-            // Observer del título
             document.title = tituloDeseado;
             var titleObs = new MutationObserver(function() {
                 if (observerActivo && document.title !== tituloDeseado) {
@@ -433,7 +457,6 @@
                             return;
                         }
 
-                        // Buscar coincidencia exacta
                         var feature = data.features[0];
                         for (var i = 0; i < data.features.length; i++) {
                             var id = data.features[i].attributes.id_cámara || '';
@@ -493,7 +516,6 @@
                 setTimeout(function() { d.remove(); }, 4000);
             }
 
-            // Verificar código pendiente
             var bridge = document.getElementById('arcgis-camera-data');
             if (!bridge) { setTitulo('Portal de ArcGIS', true); return; }
 
@@ -511,7 +533,6 @@
                 setTitulo('Portal de ArcGIS', true);
             }
 
-            // Atajo manual Ctrl+Shift+Q en ArcGIS
             document.addEventListener('keydown', function(e) {
                 if (e.ctrlKey && e.shiftKey && e.key === 'Q') {
                     navigator.clipboard.readText().then(function(texto) {
@@ -530,7 +551,6 @@
             log('✅ Módulo inicializado');
         }
 
-        // Inyectar
         const s = document.createElement('script');
         s.textContent = '(' + arcgisInjected.toString() + ')(' +
             JSON.stringify(CONFIG.FEATURESERVER_URL) + ',' + CONFIG.ZOOM_LEVEL + ')';
