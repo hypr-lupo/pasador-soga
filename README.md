@@ -23,7 +23,7 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 - **Título de pestaña** — Muestra el destacamento y código de cámara activo en la pestaña del navegador
 
 
-### Mascara — Navegación y Geolocalización  
+### Mascara — Asistente de Procedimientos 
 - Apartado que recopila la última hora de procedimientos del Sistema
 - Funcionalidades de fijado, ignorado y contador de pendientes y cerrados  
 - Colorizacion de procedimientos en función de tipificación
