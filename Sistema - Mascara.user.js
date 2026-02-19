@@ -961,7 +961,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🛡️ Sistema Seguridad Integrado v1.0');
+        console.log('🛡️ Mascara Integrada v1.0');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
