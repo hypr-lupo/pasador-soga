@@ -1,16 +1,19 @@
 // ==UserScript==
-// @name         Sistema - Seguridad Integrado
+// @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      1.1
-// @description  Coloreo de procedimientos + Panel Lateral Última Hora. Modular, optimizado, extensible.
+// @version      2.0
+// @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
-// @copyright    2026-2027 Leonardo Navarro
+// @copyright    2025-2026 Leonardo Navarro
 // @license      MIT
 // @match        https://seguridad.lascondes.cl/incidents*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
+// @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
 // ==/UserScript==
+
 
 (function () {
     'use strict';
