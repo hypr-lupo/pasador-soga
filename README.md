@@ -54,8 +54,8 @@ Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamen
 
 | Script       | Instalación |
 |--------------|------------|
-| **PASADOR**  | [Instalar PASADOR](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/VSaaS%20Pasador%20ArcGIS.user.js) |
-| **MÁSCARA**  | [Instalar MÁSCARA](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20Mascara.user.js) |
+| **PASADOR**  | [Instalar PASADOR](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/VSaaS-PasadorArcGIS.user.js) |
+| **MÁSCARA**  | [Instalar MÁSCARA](https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js) |
 
 
 ### Paso 3 — Verificar
