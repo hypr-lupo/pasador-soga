@@ -22,16 +22,6 @@
  * PASADOR v2.10 - Puente VSaaS ↔ ArcGIS + QoL
  * Copyright (c) 2026-2027 Leonardo Navarro
  * Licensed under MIT License
- *
- * v2.10 - Robustecimiento:
- *   - Observer auto-reconectable (detecta nodos huérfanos)
- *   - Centinela DOM: vigila destrucción/recreación del h3 por Angular
- *   - Polling de respaldo cada 2s como fallback del observer
- *   - Heartbeat: título se recalcula periódicamente
- *   - Ctrl+Q con triple fallback (clipboard → DOM → estado)
- *   - Observer escucha cambios en atributo title del h3
- *   - ArcGIS sin búsqueda → modo pasivo (no toca título)
- *   - pendingCamera se limpia al consumirse (no persiste entre sesiones)
  * ═══════════════════════════════════════════════════════════════════
  */
 
