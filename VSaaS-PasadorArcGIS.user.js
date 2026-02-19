@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VSaaS - Pasador ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
@@ -19,7 +19,7 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * PASADOR v2.10 - Puente VSaaS ↔ ArcGIS + QoL
+ * Mascara para Sistemas de Seguridad Pública
  * Copyright (c) 2026-2027 Leonardo Navarro
  * Licensed under MIT License
  * ═══════════════════════════════════════════════════════════════════
