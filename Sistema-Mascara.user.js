@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.3
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -13,6 +13,14 @@
 // @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // ==/UserScript==
+
+/*
+ * ═══════════════════════════════════════════════════════════════════
+ * Mascara para Sistemas de Seguridad Pública
+ * Copyright (c) 2026-2027 Leonardo Navarro
+ * Licensed under MIT License
+ * ═══════════════════════════════════════════════════════════════════
+ */
 
 (function () {
     'use strict';
