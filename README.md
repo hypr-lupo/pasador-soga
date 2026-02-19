@@ -14,8 +14,6 @@ Conjunto de userscripts para optimizar la operación del sistema de videovigilan
 
 Script principal que integra navegación rápida de alertas con búsqueda automática de ubicación de cámaras en ArcGIS.
 
-**Funcionalidades:**
-
 - **W** — Abre la imagen de la alerta seleccionada
 - **A / D** — Navega entre imágenes de la alerta (anterior / siguiente)
 - **Ctrl+Q** — Busca la cámara en ArcGIS y abre el mapa centrado en su ubicación
@@ -24,7 +22,9 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 
 
 ### Mascara — Asistente de Procedimientos 
-- Apartado que recopila la última hora de procedimientos del Sistema
+
+Apartado que recopila la última hora de procedimientos del Sistema de Seguridad Municipal.
+
 - Funcionalidades de fijado, ignorado y contador de pendientes y cerrados  
 - Colorizacion de procedimientos en función de tipificación
 - Botón de localización rápida para ArcGIS y Google Maps  
