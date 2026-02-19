@@ -15,7 +15,7 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * SOGA - Script Optimizador de Gestión de Alertas
+ * SOGA - Script Optimizador de Gestión de Automatizada
  * Copyright (c) 2026-2027 Leonardo Navarro
  *
  * Licensed under MIT License
