@@ -15,9 +15,8 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * SOGA - Script Optimizador de Gestión de Automatizada
+ * Script Optimizador de Gestión Automatizada para VSaaS
  * Copyright (c) 2026-2027 Leonardo Navarro
- *
  * Licensed under MIT License
  *
  *   SOLO PARA CIRCUNSTANCIAS ESPECIALES
