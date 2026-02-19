@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VSaaS SOGA
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Script Optimizador de Gestión Automatizada.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
