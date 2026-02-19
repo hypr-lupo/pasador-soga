@@ -19,7 +19,7 @@
 
 /*
  * ═══════════════════════════════════════════════════════════════════
- * Mascara para Sistemas de Seguridad Pública
+ * pasador VSaaS - ArcGis
  * Copyright (c) 2026-2027 Leonardo Navarro
  * Licensed under MIT License
  * ═══════════════════════════════════════════════════════════════════
