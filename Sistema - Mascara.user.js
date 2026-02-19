@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Sistema - Seguridad Integrado
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Coloreo de procedimientos + Panel Lateral Última Hora. Modular, optimizado, extensible.
-// @author       Leo
+// @author       Leonardo Navarro (hypr-lupo)
+// @copyright    2026-2027 Leonardo Navarro
+// @license      MIT
 // @match        https://seguridad.lascondes.cl/incidents*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
