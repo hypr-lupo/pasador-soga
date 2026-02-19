@@ -1,15 +1,13 @@
 // ==UserScript==
-// @name         Sistema Mascara
+// @name         Sistema - Seguridad Integrado
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
+// @version      1.0
+// @description  Coloreo de procedimientos + Panel Lateral Última Hora. Modular, optimizado, extensible.
 // @author       Leo
 // @match        https://seguridad.lascondes.cl/incidents*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @run-at       document-idle
-// @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
-// @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema%20-%20Mascara.user.js
 // ==/UserScript==
 
 (function () {
@@ -502,21 +500,6 @@
             window.focus();
         },
 
-        // ── Google Maps ──
-        gmapsWindow: null,
-        abrirEnGMaps(dir, procId) {
-            if (!dir) return;
-            const q = Utils.prepararDireccion(dir);
-            const url = `https://www.google.com/maps/search/${encodeURIComponent(q)}`;
-            if (this.gmapsWindow && !this.gmapsWindow.closed) {
-                this.gmapsWindow.location.href = url;
-            } else {
-                this.gmapsWindow = window.open(url, 'gmaps_visor');
-            }
-            if (procId) document.title = `${CONFIG.TITULO_ORIGINAL} | ${Utils.formatearId(procId)}`;
-            window.focus();
-        },
-
         // ── Scraping ──
         _extraerDeHTML(html) {
             const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -695,7 +678,7 @@
                 .estado-atencion{background:#faf5ff;color:#9333ea;border:1px solid #c084fc}
                 .estado-atendido{background:#f0fdfa;color:#0d9488;border:1px solid #5eead4}
                 .estado-otro{background:#f8fafc;color:#64748b;border:1px solid #cbd5e1}
-                .seg-meta{display:flex;gap:8px;margin-top:3px;font-size:14px;color:#64748b;flex-wrap:wrap}
+                .seg-meta{display:flex;gap:8px;margin-top:3px;font-size:11px;color:#64748b;flex-wrap:wrap}
                 .seg-meta span{display:flex;align-items:center;gap:2px}
                 .seg-desc{margin-top:4px;font-size:12.5px;color:#475569;line-height:1.45;max-height:80px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:5px 7px;border-radius:3px;border-left:2px solid #e2e8f0}
                 .seg-desc::-webkit-scrollbar{width:4px}.seg-desc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:2px}
@@ -703,8 +686,8 @@
                 .seg-dir-text{font-weight:500}
                 .seg-btn-gis{display:inline-flex;align-items:center;gap:2px;background:#10b981;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap}
                 .seg-btn-gis:hover{background:#059669}
-                .seg-btn-gmaps{display:inline-flex;align-items:center;gap:2px;background:#4285f4;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap}
-                .seg-btn-gmaps:hover{background:#3367d6}
+                .seg-btn-gmaps{display:inline-flex;align-items:center;gap:2px;background:#4285f4;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap;opacity:.6}
+                .seg-btn-gmaps:hover{background:#3367d6;opacity:1}
                 .seg-cat-bar{width:4px;border-radius:2px;flex-shrink:0;align-self:stretch;min-height:20px}
                 .seg-acts{display:flex;gap:8px;margin-top:4px;align-items:center}
                 .seg-time{font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0;text-align:right;min-width:70px}
@@ -738,7 +721,7 @@
                 <div class="seg-dir">
                     📍 <span class="seg-dir-text">${Utils.escapeHTML(proc.dir)}</span>
                     <button class="seg-btn-gis" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en ArcGIS">🗺️ ArcGIS</button>
-                    <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en Google Maps">📍 GMaps</button>
+                    <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Google Maps (próximamente)" disabled>📍 GMaps</button>
                 </div>` : '';
 
             // Clases de la fila
@@ -819,8 +802,6 @@
                 el.addEventListener('click', () => this.toggleIgnore(el.dataset.id)));
             body.querySelectorAll('.seg-btn-gis').forEach(el =>
                 el.addEventListener('click', () => this.abrirEnArcGIS(el.dataset.dir, el.dataset.pid)));
-            body.querySelectorAll('.seg-btn-gmaps').forEach(el =>
-                el.addEventListener('click', () => this.abrirEnGMaps(el.dataset.dir, el.dataset.pid)));
 
             this._actualizarTiempos();
         },
@@ -980,7 +961,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v1.1');
+        console.log('🛡️ Sistema Seguridad Integrado v1.0');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
