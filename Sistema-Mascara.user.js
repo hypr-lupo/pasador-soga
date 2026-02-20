@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.3
+// @version      2.4
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -50,10 +50,6 @@
         STORAGE_PINNED_IDS: 'slc_pinned_incidents',
         STORAGE_PINNED_DATA: 'slc_pinned_data',
         STORAGE_IGNORED_IDS: 'slc_ignored_incidents',
-
-        // Títulos
-        TITULO_ORIGINAL: 'SEGURIDAD PÚBLICA | Procedimientos',
-        TITULO_CARGANDO: 'SEGURIDAD PÚBLICA | Cargando...',
 
         // ArcGIS
         ARCGIS_VISOR_URL: 'https://arcgismlc.lascondes.cl/portal/apps/webappviewer/index.html?id=118513d990134fcbb9196ac7884cfb8c',
@@ -508,7 +504,20 @@
             } else {
                 this.arcgisWindow = window.open(url, 'arcgis_visor');
             }
-            if (procId) document.title = `${CONFIG.TITULO_ORIGINAL} | ${Utils.formatearId(procId)}`;
+            window.focus();
+        },
+
+        // ── Google Maps ──
+        gmapsWindow: null,
+        abrirEnGMaps(dir, procId) {
+            if (!dir) return;
+            const q = Utils.prepararDireccion(dir);
+            const url = `https://www.google.com/maps/search/${encodeURIComponent(q)}`;
+            if (this.gmapsWindow && !this.gmapsWindow.closed) {
+                this.gmapsWindow.location.href = url;
+            } else {
+                this.gmapsWindow = window.open(url, 'gmaps_visor');
+            }
             window.focus();
         },
 
@@ -561,7 +570,6 @@
         async scrapear() {
             if (this.cargando) return;
             this.cargando = true;
-            document.title = CONFIG.TITULO_CARGANDO;
             this._indicador('Actualizando...');
 
             const pins = this._loadPinnedIds();
@@ -604,7 +612,6 @@
 
             this.procedimientos = nuevos;
             this.cargando = false;
-            document.title = CONFIG.TITULO_ORIGINAL;
             this._savePinnedData();
             this.render();
         },
@@ -698,8 +705,8 @@
                 .seg-dir-text{font-weight:500}
                 .seg-btn-gis{display:inline-flex;align-items:center;gap:2px;background:#10b981;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap}
                 .seg-btn-gis:hover{background:#059669}
-                .seg-btn-gmaps{display:inline-flex;align-items:center;gap:2px;background:#4285f4;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap;opacity:.6}
-                .seg-btn-gmaps:hover{background:#3367d6;opacity:1}
+                .seg-btn-gmaps{display:inline-flex;align-items:center;gap:2px;background:#4285f4;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap}
+                .seg-btn-gmaps:hover{background:#3367d6}
                 .seg-cat-bar{width:4px;border-radius:2px;flex-shrink:0;align-self:stretch;min-height:20px}
                 .seg-acts{display:flex;gap:8px;margin-top:4px;align-items:center}
                 .seg-time{font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0;text-align:right;min-width:70px}
@@ -733,7 +740,7 @@
                 <div class="seg-dir">
                     📍 <span class="seg-dir-text">${Utils.escapeHTML(proc.dir)}</span>
                     <button class="seg-btn-gis" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en ArcGIS">🗺️ ArcGIS</button>
-                    <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Google Maps (próximamente)" disabled>📍 GMaps</button>
+                    <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en Google Maps">📍 GMaps</button>
                 </div>` : '';
 
             // Clases de la fila
@@ -814,6 +821,8 @@
                 el.addEventListener('click', () => this.toggleIgnore(el.dataset.id)));
             body.querySelectorAll('.seg-btn-gis').forEach(el =>
                 el.addEventListener('click', () => this.abrirEnArcGIS(el.dataset.dir, el.dataset.pid)));
+            body.querySelectorAll('.seg-btn-gmaps').forEach(el =>
+                el.addEventListener('click', () => this.abrirEnGMaps(el.dataset.dir, el.dataset.pid)));
 
             this._actualizarTiempos();
         },
@@ -973,7 +982,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🛡️ Mascara Integrada v1.0');
+        console.log('🎭 Máscara v2.4');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
