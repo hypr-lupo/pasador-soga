@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.4
+// @version      2.5
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -13,14 +13,6 @@
 // @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // ==/UserScript==
-
-/*
- * ═══════════════════════════════════════════════════════════════════
- * Mascara para Sistemas de Seguridad Pública
- * Copyright (c) 2026-2027 Leonardo Navarro
- * Licensed under MIT License
- * ═══════════════════════════════════════════════════════════════════
- */
 
 (function () {
     'use strict';
@@ -433,7 +425,7 @@
     const Panel = {
         procedimientos: new Map(),
         cargando: false,
-        visible: true,
+        visible: !/\/incidents\/\d/.test(location.pathname),
         arcgisWindow: null,
 
         // ── Storage ──
@@ -699,6 +691,9 @@
                 .estado-otro{background:#f8fafc;color:#64748b;border:1px solid #cbd5e1}
                 .seg-meta{display:flex;gap:8px;margin-top:3px;font-size:11px;color:#64748b;flex-wrap:wrap}
                 .seg-meta span{display:flex;align-items:center;gap:2px}
+                .seg-id-copy{color:#2563eb;text-decoration:none;cursor:pointer;border-bottom:1px dashed #93c5fd;transition:color .2s}
+                .seg-id-copy:hover{color:#1d4ed8}
+                .seg-id-copy.copied{color:#16a34a;border-bottom-color:#86efac}
                 .seg-desc{margin-top:4px;font-size:12.5px;color:#475569;line-height:1.45;max-height:80px;overflow-y:auto;white-space:pre-wrap;word-break:break-word;background:#f8fafc;padding:5px 7px;border-radius:3px;border-left:2px solid #e2e8f0}
                 .seg-desc::-webkit-scrollbar{width:4px}.seg-desc::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:2px}
                 .seg-dir{margin-top:3px;font-size:11px;color:#334155;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
@@ -758,7 +753,7 @@
                     <div class="seg-content">
                         <div class="seg-tipo">${Utils.escapeHTML(proc.tipo)} ${estadoHTML}</div>
                         <div class="seg-meta">
-                            <span>🆔 ${Utils.escapeHTML(Utils.formatearId(proc.id))}</span>
+                            <span><a href="#" class="seg-id-copy" data-rawid="${Utils.escapeAttr(proc.id)}" title="Copiar ID">🆔 ${Utils.escapeHTML(Utils.formatearId(proc.id))}</a></span>
                             <span>📡 ${Utils.escapeHTML(proc.origen || '')}</span>
                         </div>
                         ${dirHTML}${descHTML}
@@ -823,6 +818,17 @@
                 el.addEventListener('click', () => this.abrirEnArcGIS(el.dataset.dir, el.dataset.pid)));
             body.querySelectorAll('.seg-btn-gmaps').forEach(el =>
                 el.addEventListener('click', () => this.abrirEnGMaps(el.dataset.dir, el.dataset.pid)));
+            body.querySelectorAll('.seg-id-copy').forEach(el =>
+                el.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const rawId = el.dataset.rawid.replace(/\s/g, '');
+                    navigator.clipboard.writeText(rawId).then(() => {
+                        el.classList.add('copied');
+                        const orig = el.textContent;
+                        el.textContent = '✅ Copiado';
+                        setTimeout(() => { el.textContent = orig; el.classList.remove('copied'); }, 1200);
+                    }).catch(() => {});
+                }));
 
             this._actualizarTiempos();
         },
@@ -982,7 +988,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v2.4');
+        console.log('🎭 Máscara v2.5');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
