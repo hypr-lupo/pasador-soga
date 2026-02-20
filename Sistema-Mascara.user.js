@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.5
+// @version      2.6
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -606,6 +606,7 @@
             this.cargando = false;
             this._savePinnedData();
             this.render();
+            this._programarSiguienteScrape();
         },
 
         // ── Limpieza ──
@@ -874,11 +875,27 @@
             document.getElementById('seg-btn-refresh').addEventListener('click', () => this.scrapear());
         },
 
+        // ── Intervalo dinámico según pendientes ──
+        _scrapeTimer: null,
+        _calcularIntervalo() {
+            const pendientes = [...this.procedimientos.values()]
+                .filter(p => p.estado?.toUpperCase().trim() === 'PENDIENTE').length;
+            if (pendientes >= 20) return 15000;
+            if (pendientes >= 10) return 30000;
+            return 45000;
+        },
+        _programarSiguienteScrape() {
+            if (this._scrapeTimer) clearTimeout(this._scrapeTimer);
+            const ms = this._calcularIntervalo();
+            this._scrapeTimer = setTimeout(() => this.scrapear(), ms);
+            const el = document.getElementById('seg-indicador');
+            if (el) el.textContent = `Próx. actualización en ${ms / 1000}s`;
+        },
+
         init() {
             this.inyectarCSS();
             this._crearPanel();
             this.scrapear();
-            setInterval(() => this.scrapear(), CONFIG.INTERVALO_ACTUALIZACION);
             setInterval(() => this.limpiarExpirados(), CONFIG.INTERVALO_LIMPIEZA);
         },
     };
@@ -988,7 +1005,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v2.5');
+        console.log('🎭 Máscara v2.6');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
