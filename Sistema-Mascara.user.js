@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.6
+// @version      2.7
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -888,8 +888,6 @@
             if (this._scrapeTimer) clearTimeout(this._scrapeTimer);
             const ms = this._calcularIntervalo();
             this._scrapeTimer = setTimeout(() => this.scrapear(), ms);
-            const el = document.getElementById('seg-indicador');
-            if (el) el.textContent = `Próx. actualización en ${ms / 1000}s`;
         },
 
         init() {
