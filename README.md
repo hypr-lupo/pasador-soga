@@ -111,7 +111,7 @@ Para forzar una actualización manual: Tampermonkey → Utilidades → Verificar
 ---
 ## Notas legales
 
-Este software es una herramienta de productividad personal desarrollada de forma independiente. No modifica, altera ni compromete los sistemas VSaaS ni ArcGIS; únicamente automatiza interacciones de interfaz de usuario que el operador realizaría manualmente.
+El uso de este script queda a discreción y autonomía del funcionario. Asi mismo es una herramienta de productividad personal desarrollada de forma independiente. No modifica, altera ni compromete los sistemas VSaaS ni ArcGIS; únicamente automatiza interacciones de interfaz de usuario que el operador realizaría manualmente.
 
 El uso de estos scripts requiere credenciales válidas de acceso a los sistemas correspondientes. Los scripts no almacenan, transmiten ni exponen credenciales ni datos sensibles.
 
