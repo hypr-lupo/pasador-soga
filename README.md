@@ -46,8 +46,7 @@ Apartado que recopila la última hora de procedimientos del Sistema de Seguridad
 
 1. Abrir la [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
 2. Instalar la extensión **Tampermonkey** y verificar que está [instalado](chrome://extensions)
-3. En **"Detalles"** verificar que **"Permitir secuencias de comandos del usuario"** esté habilitado
-4. Recargar las páginas del VSaaS y del Sistema de Gestión
+3. En **"Administrar extensión"** verificar que **"Permitir secuencias de comandos del usuario"** esté habilitado
 
 ### Paso 2 — Instalar los scripts
 
@@ -61,10 +60,12 @@ Hacer click en el enlace correspondiente. Tampermonkey detectará automáticamen
 
 ### Paso 3 — Verificar
 
-1. Abrir VSaaS y seleccionar una alerta
-2. Verificar que el título de la pestaña muestre el destacamento y código
-3. Presionar **W** → debe abrir la imagen
-4. Presionar **Ctrl+Q** → debe abrir ArcGIS con la ubicación de la cámara
+1. Recargar las páginas del VSaaS y del Sistema de Gestión
+2. Escoger el destacamento y seleccionar una alerta
+3. Verificar que el título de la pestaña muestre el destacamento y código
+4. Presionar **W** → debe abrir la imagen
+5. Con **A** y **D** cambian las imágenes en el modo Carrusel
+6. Presionar **Ctrl+Q** → debe abrir ArcGIS con la ubicación de la cámara
 
 Ante cualquier eventualidad actualizar la página con F5.
 
