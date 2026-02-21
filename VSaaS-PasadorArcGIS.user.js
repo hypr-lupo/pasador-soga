@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         VSaaS - Pasador ArcGIS
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Navegación WAD (W/A/D) + Clipboard + Título + Ctrl+Q ArcGIS
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2026-2027 Leonardo Navarro
@@ -39,7 +39,7 @@
         DEBUG: true
     };
 
-    const CODIGO_RE = /\b([A-Z0-9]{2,10}-\d{1,3})\b/;
+    const CODIGO_RE = /\b([A-Z0-9]{1,10}-\d{1,3})\b/;
 
     const SITE = {
         isVSaaS: location.hostname.includes('vsaas.ai'),
