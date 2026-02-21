@@ -46,7 +46,7 @@ Apartado que recopila la última hora de procedimientos del Sistema de Seguridad
 
 1. Abrir la [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
 2. Instalar la extensión **Tampermonkey** y verificar que está [instalado](chrome://extensions)
-3. En **"Administrar extensión"** verificar que **"Permitir secuencias de comandos del usuario"** esté habilitado
+3. Click derecho en el ícono de la extensión, seleccionar **"Administrar extensión"** y verificar que **"Permitir secuencias de comandos del usuario"** esté habilitado
 
 ### Paso 2 — Instalar los scripts
 
