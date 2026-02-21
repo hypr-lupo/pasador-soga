@@ -44,9 +44,10 @@ Apartado que recopila la última hora de procedimientos del Sistema de Seguridad
 
 ### Paso 1 — Instalar Tampermonkey
 
-1. Abrir la [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo) (o la tienda de extensiones de tu navegador)
-2. Instalar la extensión **Tampermonkey**
-3. En la configuración de la extensión, verificar que **"Permitir acceso a las URL de los archivos"** esté habilitado
+1. Abrir la [Chrome Web Store](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
+2. Instalar la extensión **Tampermonkey** y verificar que está [instalado](chrome://extensions)
+3. En **"Detalles"** verificar que **"Permitir secuencias de comandos del usuario"** esté habilitado
+4. Recargar las páginas del VSaaS y del Sistema de Gestión
 
 ### Paso 2 — Instalar los scripts
 
