@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         Sistema - Mascara
+// @name         Sistema - Mascara - DESARROLLO
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.9
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -13,6 +13,14 @@
 // @updateURL    https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // @downloadURL  https://github.com/hypr-lupo/pasador-soga/raw/refs/heads/main/Sistema-Mascara.user.js
 // ==/UserScript==
+
+/*
+ * ═══════════════════════════════════════════════════════════════════
+ * Mascara para Sistemas de Seguridad Pública
+ * Copyright (c) 2026-2027 Leonardo Navarro
+ * Licensed under MIT License
+ * ═══════════════════════════════════════════════════════════════════
+ */
 
 (function () {
     'use strict';
@@ -424,6 +432,7 @@
 
     const Panel = {
         procedimientos: new Map(),
+        totalPendientes: 0,
         cargando: false,
         visible: !/\/incidents\/\d/.test(location.pathname),
         arcgisWindow: null,
@@ -519,6 +528,7 @@
             const filas = doc.querySelectorAll('table tbody tr');
             const resultados = [];
             let hayRecientes = false;
+            let pendientesTotal = 0;
 
             for (const fila of filas) {
                 const celdas = fila.querySelectorAll('td');
@@ -551,12 +561,13 @@
                 const badges = fila.querySelectorAll('.badge');
                 if (badges.length) estado = badges[badges.length - 1].textContent.trim();
 
+                if (estado && estado.toUpperCase().trim() === 'PENDIENTE') pendientesTotal++;
                 if (Utils.dentroDeVentana(fecha)) {
                     hayRecientes = true;
                     resultados.push({ fecha, fechaTexto, tipo, id, origen, desc, dir, link, estado });
                 }
             }
-            return { resultados, seguirBuscando: hayRecientes && filas.length > 0 };
+            return { resultados, seguirBuscando: hayRecientes && filas.length > 0, pendientesTotal };
         },
 
         async scrapear() {
@@ -567,6 +578,7 @@
             const pins = this._loadPinnedIds();
             const ignored = this._loadIgnoredIds();
             const nuevos = new Map();
+            let totalPendientesGlobal = 0;
 
             for (let pag = 1; pag <= CONFIG.MAX_PAGINAS; pag++) {
                 try {
@@ -575,7 +587,8 @@
                         credentials: 'same-origin',
                     });
                     if (!r.ok) break;
-                    const { resultados, seguirBuscando } = this._extraerDeHTML(await r.text());
+                    const { resultados, seguirBuscando, pendientesTotal } = this._extraerDeHTML(await r.text());
+                    totalPendientesGlobal += pendientesTotal;
                     for (const proc of resultados) {
                         if (!nuevos.has(proc.id)) {
                             proc.pinned = pins.has(proc.id);
@@ -603,6 +616,7 @@
             }
 
             this.procedimientos = nuevos;
+            this.totalPendientes = totalPendientesGlobal;
             this.cargando = false;
             this._savePinnedData();
             this.render();
@@ -727,9 +741,12 @@
 
             // Categoría → barra lateral de color
             const cat = clasificar(proc.tipo);
-            const catBarHTML = cat
-                ? `<div class="seg-cat-bar" style="background:${cat.border}" title="${Utils.escapeAttr(cat.nombre)}"></div>`
-                : `<div class="seg-cat-bar" style="background:#e5e7eb" title="Sin categoría"></div>`;
+
+            // Barra lateral → solo visible si PENDIENTE
+            const estadoUpper = (proc.estado || '').toUpperCase().trim();
+            const catBarHTML = estadoUpper === 'PENDIENTE'
+                ? `<div class="seg-cat-bar" style="background:#dc2626" title="PENDIENTE"></div>`
+                : `<div class="seg-cat-bar" style="background:transparent" title="${estadoUpper}"></div>`;
 
             // Dirección + botones ArcGIS / Google Maps
             const dirHTML = proc.dir ? `
@@ -744,8 +761,11 @@
             if (proc.pinned) rowClass += ' pinned';
             if (proc.ignored) rowClass += ' ignored';
 
+            // Fondo por categoría
+            const rowBg = cat ? `background:${cat.color};` : '';
+
             return `
-                <div class="${rowClass}" id="seg-r-${sid}">
+                <div class="${rowClass}" id="seg-r-${sid}" style="${rowBg}">
                     ${catBarHTML}
                     <div class="seg-side">
                         <span class="seg-pin ${proc.pinned ? 'on' : 'off'}" data-id="${sid}" title="${proc.pinned ? 'Desfijar' : 'Fijar'}">${proc.pinned ? '📌' : '📍'}</span>
@@ -805,6 +825,8 @@
             const elC = document.getElementById('seg-cnt-cerr');
             if (elP) elP.textContent = nPend;
             if (elC) elC.textContent = nCerr;
+            const elPT = document.getElementById('seg-cnt-pend-total');
+            if (elPT) elPT.textContent = this.totalPendientes || 0;
 
             // Badge
             const badge = document.getElementById('seg-badge');
@@ -850,6 +872,7 @@
                     <div id="seg-estados">
                         <span><span class="seg-dot pendiente"></span> Pendientes: <b id="seg-cnt-pend">0</b></span>
                         <span><span class="seg-dot cerrado"></span> Cerrados: <b id="seg-cnt-cerr">0</b></span>
+                        <span>| Total pend.: <b id="seg-cnt-pend-total">0</b></span>
                     </div>
                     <div id="seg-indicador">Iniciando...</div>
                 </div>
@@ -1003,7 +1026,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v2.6');
+        console.log('🎭 Máscara v2.9');
 
         // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
         const esperarTabla = setInterval(() => {
