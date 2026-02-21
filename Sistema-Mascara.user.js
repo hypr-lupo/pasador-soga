@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         Sistema - Mascara - DESARROLLO
+// @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
 // @version      2.9
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
