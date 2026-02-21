@@ -25,8 +25,8 @@ Script principal que integra navegación rápida de alertas con búsqueda autom�
 
 Apartado que recopila la última hora de procedimientos del Sistema de Seguridad Municipal.
 
-- Funcionalidades de fijado, ignorado y contador de pendientes y cerrados  
-- Colorizacion de procedimientos en función de tipificación
+- Funcionalidades de fijado, ignorado y contador de procedimientos pendientes y cerrados de la última hora
+- Colorizacion de procedimientos en función de la tipificación del procedimiento
 - Botón de localización rápida para ArcGIS y Google Maps  
 
 ---
@@ -99,8 +99,11 @@ Verificar que la sesión de ArcGIS esté activa en el navegador. El script requi
 **El título de la pestaña no se actualiza**  
 El observador se activa al cambiar de alerta. Seleccionar una alerta diferente para verificar.
 
+**La ubicación por Google Maps no es correcta**
+Se realiza la búsqueda tal cual como se realizaría normalmente, esto es un problema del Maps no del Script.
+
 **Tampermonkey no detecta actualizaciones**  
-Ir a Tampermonkey → Dashboard → seleccionar el script → pestaña Configuración → verificar que "Verificar actualizaciones" esté habilitado.
+Ir a Tampermonkey → Dashboard → seleccionar el script → pestaña Configuración → verificar que "Verificar actualizaciones" esté habilitado.  
 
 ---
 
