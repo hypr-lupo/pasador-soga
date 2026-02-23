@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.11
+// @version      2.13
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -88,7 +88,7 @@
             nombre: '💰 Robos / Hurtos / Estafas',
             color: 'rgba(234, 88, 12, 0.2)',
             border: '#ea580c',
-            keywords: ['hurtos', 'estafa', 'defraudaciones', 'microtráfico', 'llamada telefónica tipo estafa'],
+            keywords: ['hurtos', 'estafa', 'defraudaciones', 'microtráfico', 'llamada telefónica tipo estafa', 'robo a transeúnte'],
         },
         {
             id: 'violencia',
@@ -120,6 +120,7 @@
             keywords: [
                 'accidentes de tránsito', 'colisión', 'choque con lesionados',
                 'choque sin lesionados', 'atropello', 'caida en vehículo',
+                'vehículo en panne', 'solicitud de grúa',
             ],
         },
         {
@@ -176,6 +177,9 @@
                 'contigencia fv', 'corte de llamada', 'en creación', 'encuestas',
                 'internos', 'llamada falsa', 'otros no clasificados', 'otros',
                 'aseo en espacio público', 'repetición de servicio',
+                'transferencia de llamada', 'solicitud de entrevista',
+                'reclamo de vecino en contra del servicio o funcionarios',
+                'supervisión a funcionario en terreno',
             ],
         },
         {
@@ -191,6 +195,9 @@
                 'detección de vehículo con sistema lector', 'hallazgo de vehículo con encargo',
                 'encargo de vehículo', 'especies abandonadas',
                 'vigilancia especial', 'sospechoso en vía pública',
+                'vehículo abandonado', 'reporte brigada de halcones',
+                'vehículo abierto o con indicios de robo',
+                'reporte brigada de vigilancia aero-municipal',
             ],
         },
         {
@@ -204,6 +211,7 @@
                 'graffiti', 'daños a mobiliario público', 'daños a móviles municipales',
                 'daños a vehículo o propiedad', 'escombros en espacio',
                 'matriz rota', 'pabellón patrio',
+                'semáforo en mal estado', 'semaforo en mal estado',
             ],
         },
         {
@@ -227,6 +235,7 @@
                 'comercio ambulante', 'consumo de cannabis', 'alcohol en vía pública',
                 'infracción por ordenanza', 'fiscalización estacionadores', 'limpia vidrios',
                 'mendicidad', 'indigente', 'fumar en parques', 'no usar mascarilla',
+                'vehículos mal estacionados', 'trabajos u ocupación vía pública',
             ],
         },
         {
@@ -234,7 +243,7 @@
             nombre: '🐾 Animales',
             color: 'rgba(16, 185, 129, 0.18)',
             border: '#10b981',
-            keywords: ['animales sueltos', 'encargo de mascota', 'perro suelto'],
+            keywords: ['animales sueltos', 'encargo de mascota', 'perro suelto', 'plagas'],
         },
         {
             id: 'patrullaje',
