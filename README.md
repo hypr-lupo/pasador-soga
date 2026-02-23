@@ -2,7 +2,7 @@
 
 Conjunto de userscripts para optimizar la operación del sistema de videovigilancia **VSaaS** (Video Surveillance as a Service) en entornos de seguridad municipal. Desarrollados para agilizar tareas repetitivas de monitoreo de alertas, navegación de cámaras y geolocalización en ArcGIS.
 
-> **Autor:** Leonardo Navarro ([@hypr-lupo](https://github.com/hypr-lupo))  
+> **Autor:** ([@hypr-lupo](https://github.com/hypr-lupo))  
 > **Licencia:** MIT  
 > **Plataforma:** Tampermonkey (Chrome / Edge / Firefox)
 
