@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      3.1
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -1205,7 +1205,8 @@
                 const label = strong.textContent.trim().toLowerCase();
                 const value = p.textContent.replace(strong.textContent, '').trim();
                 if (label.includes('identificador')) id = value;
-                else if (label.includes('fecha')) fecha = value;
+                else if (label.includes('fecha de recepción') || label.includes('fecha de recepcion')) fecha = value;
+                else if (label.includes('fecha') && !fecha && value) fecha = value;
                 else if (label.includes('dirección')) dir = value;
                 else if (label.includes('descripción')) desc = value;
             }
@@ -1491,7 +1492,7 @@
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v2.15');
+        console.log('🎭 Máscara v3.0');
 
         const esMapPage = location.pathname.startsWith('/incident_maps');
 
