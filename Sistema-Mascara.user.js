@@ -1,12 +1,13 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      2.13
+// @version      3.0
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
 // @license      MIT
 // @match        https://seguridad.lascondes.cl/incidents*
+// @match        https://seguridad.lascondes.cl/incident_maps*
 // @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
 // @grant        none
 // @run-at       document-idle
@@ -721,7 +722,7 @@
                 .seg-btn-gmaps{display:inline-flex;align-items:center;gap:2px;background:#4285f4;color:#fff;border:none;padding:2px 7px;border-radius:3px;font-size:10px;cursor:pointer;font-weight:600;transition:background .2s;white-space:nowrap}
                 .seg-btn-gmaps:hover{background:#3367d6}
                 .seg-cat-bar{width:4px;border-radius:2px;flex-shrink:0;align-self:stretch;min-height:20px}
-                .seg-acts{display:flex;gap:8px;margin-top:4px;align-items:center}
+                .seg-toolbar{display:flex;gap:6px;margin-top:5px;align-items:center;padding-top:4px;border-top:1px solid rgba(0,0,0,.06)}
                 .seg-time{font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0;text-align:right;min-width:70px}
                 .seg-link{color:#2563eb;text-decoration:none;font-size:11px}
                 .seg-link:hover{text-decoration:underline}
@@ -741,30 +742,16 @@
             const sid = Utils.escapeAttr(proc.id);
             const estadoHTML = et ? `<span class="seg-estado ${ec}">${et}</span>` : '';
             const descHTML = proc.desc ? `<div class="seg-desc">${Utils.escapeHTML(proc.desc.substring(0, 300))}</div>` : '';
-
-            // Categoría → barra lateral de color
             const cat = clasificar(proc.tipo);
-
-            // Barra lateral → solo visible si PENDIENTE
             const estadoUpper = (proc.estado || '').toUpperCase().trim();
             const catBarHTML = estadoUpper === 'PENDIENTE'
                 ? `<div class="seg-cat-bar" style="background:#dc2626" title="PENDIENTE"></div>`
                 : `<div class="seg-cat-bar" style="background:transparent" title="${estadoUpper}"></div>`;
+            const dirHTML = proc.dir ? `<div class="seg-dir">📍 <span class="seg-dir-text">${Utils.escapeHTML(proc.dir)}</span></div>` : '';
 
-            // Dirección + botones ArcGIS / Google Maps
-            const dirHTML = proc.dir ? `
-                <div class="seg-dir">
-                    📍 <span class="seg-dir-text">${Utils.escapeHTML(proc.dir)}</span>
-                    <button class="seg-btn-gis" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en ArcGIS">🗺️ ArcGIS</button>
-                    <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en Google Maps">📍 GMaps</button>
-                </div>` : '';
-
-            // Clases de la fila
             let rowClass = 'seg-row';
             if (proc.pinned) rowClass += ' pinned';
             if (proc.ignored) rowClass += ' ignored';
-
-            // Fondo por categoría
             const rowBg = cat ? `background:${cat.color};` : '';
 
             return `
@@ -781,8 +768,10 @@
                             <span>📡 ${Utils.escapeHTML(proc.origen || '')}</span>
                         </div>
                         ${dirHTML}${descHTML}
-                        <div class="seg-acts">
+                        <div class="seg-toolbar">
                             ${proc.link ? `<a class="seg-link" href="${Utils.escapeAttr(proc.link)}" target="_blank">Ver detalle →</a>` : ''}
+                            ${proc.dir ? `<button class="seg-btn-gis" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en ArcGIS">🗺️ ArcGIS</button>
+                            <button class="seg-btn-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" data-pid="${sid}" title="Buscar en Google Maps">📍 GMaps</button>` : ''}
                         </div>
                     </div>
                     <div class="seg-time" id="seg-t-${sid}">${Utils.tiempoRelativo(proc.fecha)}</div>
@@ -1022,26 +1011,510 @@
     };
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  8. INICIALIZACIÓN                                            ║
+    // ║  8. MÓDULO: PANEL DE MAPA                                     ║
+    // ║  En /incident_maps muestra lista de procedimientos del mapa.  ║
+    // ║  Panel cerrado al cargar. Al abrir, fetch progresivo.         ║
+    // ║  Click en fila → toggle InfoWindow del marcador.              ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    const MapPanel = {
+        _marcadores: [],       // datos crudos del JSON de ModelMap
+        _procedimientos: [],   // datos enriquecidos tras fetch
+        _cargado: false,
+        _cargando: false,
+        _panelCreado: false,
+        _activeMarkerIdx: null, // índice del marcador con InfoWindow abierta
+        _arcgisWin: null,
+        _gmapsWin: null,
+        visible: false,
+
+        esMapPage() {
+            return location.pathname.startsWith('/incident_maps');
+        },
+
+        // ── Detectar si la página tiene filtro aplicado ──
+        _tieneFiltro() {
+            return location.search.includes('incident_report') || location.search.includes('date_range');
+        },
+
+        // ── Mostrar confirmación cuando no hay filtro ──
+        _mostrarConfirmacion() {
+            const body = document.getElementById('seg-map-body');
+            if (!body) return;
+            body.innerHTML = `
+                <div style="padding:20px;text-align:center">
+                    <div style="font-size:28px;margin-bottom:10px">⚠️</div>
+                    <div style="font-weight:600;color:#1e293b;margin-bottom:8px">Sin filtro detectado</div>
+                    <div style="font-size:12px;color:#64748b;margin-bottom:16px;line-height:1.5">
+                        La página del mapa no tiene filtro aplicado.<br>
+                        Cargar todos los procedimientos puede ser lento.
+                    </div>
+                    <button id="seg-map-btn-confirm" style="background:#059669;color:#fff;border:none;padding:8px 20px;border-radius:6px;cursor:pointer;font-weight:600;font-size:13px;transition:background .2s">
+                        Cargar de todas formas
+                    </button>
+                </div>`;
+            document.getElementById('seg-map-btn-confirm').addEventListener('click', () => {
+                this._cargarProcedimientos();
+            });
+        },
+
+        // ── Inicio de carga con verificación de filtro ──
+        _iniciarCarga() {
+            if (this._cargado || this._cargando) return;
+            if (this._tieneFiltro()) {
+                this._cargarProcedimientos();
+            } else {
+                this._mostrarConfirmacion();
+            }
+        },
+
+        // ── Parsear JSON de ModelMap desde el script tag ──
+        _parsearMarcadores() {
+            const scripts = document.querySelectorAll('script');
+            for (const s of scripts) {
+                const m = s.textContent.match(/new\s+ModelMap\s*\(\s*'(.*?)'\s*\)/s);
+                if (m) {
+                    try {
+                        // El JSON viene con \" escapado dentro de comillas simples
+                        const jsonStr = m[1].replace(/\\"/g, '"').replace(/\\'/g, "'");
+                        this._marcadores = JSON.parse(jsonStr);
+                        return true;
+                    } catch (e) {
+                        console.error('❌ Error parseando ModelMap JSON:', e);
+                    }
+                }
+            }
+            // Fallback: intentar capturar con regex más permisivo
+            for (const s of scripts) {
+                const m = s.textContent.match(/new\s+ModelMap\s*\(\s*'(\[[\s\S]*?\])'\s*\)/);
+                if (m) {
+                    try {
+                        const jsonStr = m[1].replace(/\\"/g, '"').replace(/\\'/g, "'");
+                        this._marcadores = JSON.parse(jsonStr);
+                        return true;
+                    } catch (e) {
+                        console.error('❌ Error parseando ModelMap JSON (fallback):', e);
+                    }
+                }
+            }
+            return false;
+        },
+
+        // ── Acceso seguro a mmap (variable global de la página) ──
+        _getMmap() {
+            return window.mmap || (typeof unsafeWindow !== 'undefined' ? unsafeWindow.mmap : null);
+        },
+
+        // ── Abrir InfoWindow directamente via fetch de url_info ──
+        async _abrirInfoWindow(proc) {
+            const marcador = this._marcadores.find(m => m.id === proc.mapId);
+            if (!marcador) return false;
+            try {
+                const r = await fetch(marcador.url_info, { credentials: 'same-origin' });
+                if (!r.ok) return false;
+                const html = await r.text();
+                const mm = this._getMmap();
+                if (!mm || !mm.map) return false;
+                const latLng = new google.maps.LatLng(parseFloat(proc.lat), parseFloat(proc.lng));
+
+                // polyinfo puede no existir aún — crear si es necesario
+                if (!mm.polyinfo) {
+                    mm.polyinfo = new google.maps.InfoWindow();
+                }
+                // Desactivar auto-pan de Google Maps para evitar doble movimiento
+                mm.polyinfo.setOptions({ disableAutoPan: true });
+                mm.polyinfo.setContent(html);
+                mm.polyinfo.setPosition(latLng);
+                mm.polyinfo.open(mm.map);
+
+                // Un solo movimiento: punto centrado con offset para panel + popup
+                const bounds = mm.map.getBounds();
+                if (bounds) {
+                    const ne = bounds.getNorthEast();
+                    const sw = bounds.getSouthWest();
+                    const mapDiv = mm.map.getDiv();
+                    const lngPerPx = (ne.lng() - sw.lng()) / mapDiv.offsetWidth;
+                    const latPerPx = (ne.lat() - sw.lat()) / mapDiv.offsetHeight;
+                    const offsetLng = this.visible ? lngPerPx * (CONFIG.PANEL_WIDTH / 2) : 0;
+                    const offsetLat = latPerPx * -300;
+                    const destino = new google.maps.LatLng(
+                        latLng.lat() - offsetLat,
+                        latLng.lng() + offsetLng
+                    );
+                    mm.map.panTo(destino);
+                } else {
+                    mm.map.panTo(latLng);
+                }
+
+                return true;
+            } catch(e) { console.error('❌ _abrirInfoWindow error:', e); return false; }
+        },
+
+        // ── Cerrar InfoWindow abierta ──
+        _cerrarInfoWindow() {
+            // Cerrar via API
+            const mm = this._getMmap();
+            if (mm && mm.polyinfo) {
+                try { mm.polyinfo.close(); } catch {}
+            }
+            // Fallback: cerrar via botón del DOM (cubre popups abiertos desde el mapa directamente)
+            const closeBtn = document.querySelector('.gm-ui-hover-effect[title="Cerrar"], .gm-ui-hover-effect[aria-label="Cerrar"]');
+            if (closeBtn) closeBtn.click();
+        },
+
+        // ── Toggle marcador desde fila del panel ──
+        async _toggleMarker(idx) {
+            const proc = this._procedimientos[idx];
+            if (!proc) return;
+
+            if (this._activeMarkerIdx === idx) {
+                this._cerrarInfoWindow();
+                this._activeMarkerIdx = null;
+                this._updateActiveRow(null);
+                return;
+            }
+
+            this._cerrarInfoWindow();
+            await this._abrirInfoWindow(proc);
+            this._activeMarkerIdx = idx;
+            this._updateActiveRow(idx);
+        },
+
+        _updateActiveRow(activeIdx) {
+            document.querySelectorAll('#seg-map-body .seg-row[data-map-idx]').forEach(row => {
+                const rowIdx = parseInt(row.dataset.mapIdx, 10);
+                row.classList.toggle('seg-row-active', rowIdx === activeIdx);
+            });
+        },
+
+        // ── Extraer datos del HTML del popup (url_info) ──
+        _parsearPopup(html) {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const heading = doc.querySelector('.panel-heading');
+            let tipo = '', estado = '';
+            if (heading) {
+                const badge = heading.querySelector('.badge');
+                estado = badge ? badge.textContent.trim() : '';
+                tipo = heading.textContent.replace(badge ? badge.textContent : '', '').replace('|', '').trim();
+            }
+            const ps = doc.querySelectorAll('.panel-body p');
+            let id = '', fecha = '', dir = '', desc = '';
+            for (const p of ps) {
+                const strong = p.querySelector('strong');
+                if (!strong) continue;
+                const label = strong.textContent.trim().toLowerCase();
+                const value = p.textContent.replace(strong.textContent, '').trim();
+                if (label.includes('identificador')) id = value;
+                else if (label.includes('fecha')) fecha = value;
+                else if (label.includes('dirección')) dir = value;
+                else if (label.includes('descripción')) desc = value;
+            }
+            // Link "Ver Procedimiento"
+            const linkEl = doc.querySelector('a[href*="/incidents/"]');
+            const link = linkEl ? linkEl.getAttribute('href') : '';
+
+            return { tipo, estado, id, fecha, dir, desc: desc.substring(0, 300), link };
+        },
+
+        // ── Fetch progresivo de url_info ──
+        async _cargarProcedimientos() {
+            if (this._cargando || this._cargado) return;
+            this._cargando = true;
+
+            if (!this._parsearMarcadores()) {
+                this._indicador('❌ No se encontraron marcadores');
+                this._cargando = false;
+                return;
+            }
+
+            const total = this._marcadores.length;
+            this._indicador(`Cargando 0/${total}...`);
+            this._procedimientos = [];
+
+            const BATCH = 3;     // requests en paralelo
+            const DELAY = 200;   // ms entre lotes
+
+            for (let i = 0; i < total; i += BATCH) {
+                const lote = this._marcadores.slice(i, i + BATCH);
+                const promesas = lote.map(async (m) => {
+                    try {
+                        const r = await fetch(m.url_info, { credentials: 'same-origin' });
+                        if (!r.ok) return null;
+                        const html = await r.text();
+                        const datos = this._parsearPopup(html);
+                        return { ...datos, lat: m.lat, lng: m.lng, color: m.color, mapId: m.id };
+                    } catch { return null; }
+                });
+                const resultados = await Promise.all(promesas);
+                for (const r of resultados) {
+                    if (r) this._procedimientos.push(r);
+                }
+                this._indicador(`Cargando ${Math.min(i + BATCH, total)}/${total}...`);
+                this._renderLista();
+                if (i + BATCH < total) await new Promise(r => setTimeout(r, DELAY));
+            }
+
+            this._cargado = true;
+            this._cargando = false;
+            this._indicador(`${this._procedimientos.length} procedimientos`);
+            this._renderLista();
+        },
+
+        _indicador(txt) {
+            const el = document.getElementById('seg-map-indicador');
+            if (el) el.textContent = txt;
+        },
+
+        // ── Renderizar fila ──
+        _renderFila(proc, idx) {
+            const cat = clasificar(proc.tipo);
+            const estadoUpper = (proc.estado || '').toUpperCase().trim();
+            const { texto: et, clase: ec } = Utils.clasificarEstado(proc.estado);
+            const estadoHTML = et ? `<span class="seg-estado ${ec}">${et}</span>` : '';
+            const rowBg = cat ? `background:${cat.color};` : '';
+            const barHTML = estadoUpper === 'PENDIENTE'
+                ? `<div class="seg-cat-bar" style="background:#dc2626" title="PENDIENTE"></div>`
+                : `<div class="seg-cat-bar" style="background:transparent"></div>`;
+            const sid = Utils.escapeAttr(proc.id);
+            const dirHTML = proc.dir ? `
+                <div class="seg-dir" style="font-size:12.5px;margin-top:4px">
+                    📍 <span class="seg-dir-text" style="font-size:13px;font-weight:600">${Utils.escapeHTML(proc.dir)}</span>
+                </div>` : '';
+            const isActive = this._activeMarkerIdx === idx;
+            const isIgnored = proc._ignored;
+
+            return `<div class="seg-row${isActive ? ' seg-row-active' : ''}${isIgnored ? ' ignored' : ''}" data-map-idx="${idx}" style="${rowBg}cursor:pointer;">
+                ${barHTML}
+                <div class="seg-content" style="flex:1;min-width:0">
+                    <div class="seg-tipo">${Utils.escapeHTML(proc.tipo)} ${estadoHTML}</div>
+                    <div class="seg-meta">
+                        <span><a href="#" class="seg-id-copy seg-map-id-copy" data-rawid="${sid}" title="Copiar ID" onclick="event.stopPropagation()">🆔 ${Utils.escapeHTML(Utils.formatearId(proc.id))}</a></span>
+                        <span>📅 ${Utils.escapeHTML(proc.fecha || '')}</span>
+                    </div>
+                    ${dirHTML}
+                    <div class="seg-toolbar" onclick="event.stopPropagation()">
+                        ${proc.link ? `<a class="seg-link" href="${Utils.escapeAttr(proc.link)}" target="_blank">Ver detalle →</a>` : ''}
+                        ${proc.dir ? `<button class="seg-btn-gis seg-map-gis" data-dir="${Utils.escapeAttr(proc.dir)}" title="ArcGIS">🗺️ ArcGIS</button>
+                        <button class="seg-btn-gmaps seg-map-gmaps" data-dir="${Utils.escapeAttr(proc.dir)}" title="GMaps">📍 GMaps</button>` : ''}
+                        <span class="seg-map-ignore" data-map-idx="${idx}" title="${isIgnored ? 'Mostrar' : 'Ignorar'}" style="margin-left:auto;cursor:pointer;opacity:${isIgnored ? '.9' : '.4'};font-size:13px">👁${isIgnored ? '‍🗨' : ''}</span>
+                    </div>
+                </div>
+            </div>`;
+        },
+
+        _renderLista() {
+            const body = document.getElementById('seg-map-body');
+            if (!body) return;
+
+            if (!this._procedimientos.length) {
+                body.innerHTML = '<div class="seg-empty">Sin procedimientos</div>';
+                return;
+            }
+
+            // Separar: pendientes, otros, ignorados
+            const indexed = this._procedimientos.map((p, i) => ({ p, i }));
+            const ignorados = indexed.filter(x => x.p._ignored);
+            const visibles = indexed.filter(x => !x.p._ignored);
+            const pendientes = visibles.filter(x => x.p.estado?.toUpperCase().trim() === 'PENDIENTE');
+            const otros = visibles.filter(x => x.p.estado?.toUpperCase().trim() !== 'PENDIENTE');
+
+            let html = '';
+            if (pendientes.length) {
+                html += `<div class="seg-sec">🔴 Pendientes (${pendientes.length})</div>`;
+                html += pendientes.map(x => this._renderFila(x.p, x.i)).join('');
+            }
+            if (otros.length) {
+                html += `<div class="seg-sec">📋 Otros (${otros.length})</div>`;
+                html += otros.map(x => this._renderFila(x.p, x.i)).join('');
+            }
+            if (ignorados.length) {
+                html += `<div class="seg-sec">👁 Ignorados (${ignorados.length})</div>`;
+                html += ignorados.map(x => this._renderFila(x.p, x.i)).join('');
+            }
+
+            body.innerHTML = html;
+
+            // Actualizar contador
+            const cnt = document.getElementById('seg-map-cnt');
+            if (cnt) cnt.textContent = ignorados.length ? `${visibles.length}/${this._procedimientos.length}` : this._procedimientos.length;
+
+            // Bind clicks — filas
+            body.querySelectorAll('.seg-row[data-map-idx]').forEach(row => {
+                row.addEventListener('click', () => {
+                    const idx = parseInt(row.dataset.mapIdx, 10);
+                    this._toggleMarker(idx);
+                });
+            });
+            // Bind — copiar ID
+            body.querySelectorAll('.seg-map-id-copy').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const rawId = el.dataset.rawid.replace(/\s/g, '');
+                    navigator.clipboard.writeText(rawId).then(() => {
+                        el.classList.add('copied');
+                        const orig = el.textContent;
+                        el.textContent = '✅ Copiado';
+                        setTimeout(() => { el.textContent = orig; el.classList.remove('copied'); }, 1200);
+                    }).catch(() => {});
+                });
+            });
+            // Bind — ArcGIS (nueva pestaña)
+            body.querySelectorAll('.seg-map-gis').forEach(el => {
+                el.addEventListener('click', () => {
+                    const q = Utils.prepararDireccion(el.dataset.dir);
+                    const url = `${CONFIG.ARCGIS_VISOR_URL}&find=${encodeURIComponent(q)}`;
+                    window.open(url, '_blank');
+                });
+            });
+            // Bind — Google Maps (nueva pestaña)
+            body.querySelectorAll('.seg-map-gmaps').forEach(el => {
+                el.addEventListener('click', () => {
+                    const q = Utils.prepararDireccion(el.dataset.dir);
+                    const url = `https://www.google.com/maps/search/${encodeURIComponent(q)}`;
+                    window.open(url, '_blank');
+                });
+            });
+            // Bind — Ignorar
+            body.querySelectorAll('.seg-map-ignore').forEach(el => {
+                el.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    const idx = parseInt(el.dataset.mapIdx, 10);
+                    const proc = this._procedimientos[idx];
+                    if (proc) {
+                        proc._ignored = !proc._ignored;
+                        this._renderLista();
+                    }
+                });
+            });
+        },
+
+        // ── CSS ──
+        _cssInjected: false,
+        inyectarCSS() {
+            if (this._cssInjected || document.getElementById('seg-map-panel-css')) return;
+            const W = CONFIG.PANEL_WIDTH;
+            const style = document.createElement('style');
+            style.id = 'seg-map-panel-css';
+            style.textContent = `
+                #seg-map-panel {
+                    position:fixed;top:0;right:0;width:${W}px;max-height:100vh;
+                    background:#fff;border-left:3px solid #059669;
+                    box-shadow:-4px 0 20px rgba(0,0,0,.15);z-index:99999;
+                    display:flex;flex-direction:column;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                    font-size:13px;transition:transform .3s ease;
+                }
+                #seg-map-panel.oculto{transform:translateX(100%)}
+                #seg-map-header{background:linear-gradient(135deg,#065f46,#059669);color:#fff;padding:10px 14px;flex-shrink:0}
+                #seg-map-header-top{display:flex;align-items:center;justify-content:space-between}
+                #seg-map-header h3{margin:0;font-size:15px;font-weight:700;display:flex;align-items:center;gap:6px}
+                #seg-map-cnt{background:rgba(255,255,255,.2);padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700}
+                #seg-map-indicador{font-size:10px;opacity:.7;font-style:italic;margin-top:3px}
+                #seg-map-acciones{display:flex;gap:6px}
+                #seg-map-acciones button{background:rgba(255,255,255,.2);border:none;color:#fff;padding:4px 8px;border-radius:4px;cursor:pointer;font-size:12px;transition:background .2s}
+                #seg-map-acciones button:hover{background:rgba(255,255,255,.35)}
+                #seg-map-body{overflow-y:auto;flex:1;background:#fff}
+                .seg-row-active{outline:2px solid #059669;outline-offset:-2px;background:#ecfdf5 !important}
+                #seg-map-toggle{position:fixed;top:50%;right:0;transform:translateY(-50%);background:linear-gradient(135deg,#065f46,#059669);color:#fff;border:none;border-radius:8px 0 0 8px;padding:12px 6px;cursor:pointer;font-size:14px;z-index:100000;box-shadow:-2px 2px 8px rgba(0,0,0,.2);writing-mode:vertical-lr;text-orientation:mixed;letter-spacing:1px;font-weight:700;transition:right .3s ease}
+                #seg-map-toggle:hover{background:linear-gradient(135deg,#064e3b,#047857)}
+                #seg-map-toggle.open{right:${W}px}
+            `;
+            document.head.appendChild(style);
+            // Reusar CSS del panel de incidents para filas, estados, etc.
+            Panel.inyectarCSS();
+            this._cssInjected = true;
+        },
+
+        _crearPanel() {
+            if (this._panelCreado) return;
+            this._panelCreado = true;
+
+            const panel = document.createElement('div');
+            panel.id = 'seg-map-panel';
+            panel.classList.add('oculto');
+            panel.innerHTML = `
+                <div id="seg-map-header">
+                    <div id="seg-map-header-top">
+                        <h3>🗺️ Procedimientos en Mapa <span id="seg-map-cnt">0</span></h3>
+                        <div id="seg-map-acciones">
+                            <button id="seg-map-btn-reload" title="Recargar lista">🔄</button>
+                            <button id="seg-map-btn-close" title="Cerrar panel">✕</button>
+                        </div>
+                    </div>
+                    <div id="seg-map-indicador">Click para cargar procedimientos</div>
+                </div>
+                <div id="seg-map-body"><div class="seg-empty">Abra el panel para cargar</div></div>`;
+            document.body.appendChild(panel);
+
+            const toggle = document.createElement('button');
+            toggle.id = 'seg-map-toggle';
+            toggle.textContent = '🗺️ MAPA';
+            document.body.appendChild(toggle);
+
+            // Toggle panel
+            toggle.addEventListener('click', () => {
+                this.visible = !this.visible;
+                panel.classList.toggle('oculto', !this.visible);
+                toggle.classList.toggle('open', this.visible);
+                // Primera apertura → verificar filtro y cargar
+                if (this.visible && !this._cargado && !this._cargando) {
+                    this._iniciarCarga();
+                }
+            });
+
+            document.getElementById('seg-map-btn-close').addEventListener('click', () => {
+                this.visible = false;
+                panel.classList.add('oculto');
+                toggle.classList.remove('open');
+            });
+
+            // Recargar fuerza un re-fetch
+            document.getElementById('seg-map-btn-reload').addEventListener('click', () => {
+                this._cargado = false;
+                this._cargando = false;
+                this._procedimientos = [];
+                this._activeMarkerIdx = null;
+                this._cargarProcedimientos();
+            });
+        },
+
+        init() {
+            if (!this.esMapPage()) return;
+            this.inyectarCSS();
+            this._crearPanel();
+            console.log('🗺️ MapPanel listo (panel cerrado, click para cargar)');
+        },
+    };
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  9. INICIALIZACIÓN                                            ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function init() {
-        console.log('🎭 Máscara v2.11');
+        console.log('🎭 Máscara v2.15');
 
-        // Esperar que exista la tabla antes de arrancar Coloreo + Watcher
-        const esperarTabla = setInterval(() => {
-            if (document.querySelector('table tbody')) {
-                clearInterval(esperarTabla);
-                Coloreo.init();
-                Watcher.init();
-                console.log('✅ Coloreo + Watcher activos');
-            }
-        }, 500);
-        setTimeout(() => clearInterval(esperarTabla), 15000);
+        const esMapPage = location.pathname.startsWith('/incident_maps');
 
-        // El panel no depende de la tabla visible
-        Panel.init();
-        console.log('✅ Panel Última Hora activo');
+        // Coloreo + Watcher + Panel solo en /incidents
+        if (!esMapPage) {
+            const esperarTabla = setInterval(() => {
+                if (document.querySelector('table tbody')) {
+                    clearInterval(esperarTabla);
+                    Coloreo.init();
+                    Watcher.init();
+                    console.log('✅ Coloreo + Watcher activos');
+                }
+            }, 500);
+            setTimeout(() => clearInterval(esperarTabla), 15000);
+
+            Panel.init();
+            console.log('✅ Panel Última Hora activo');
+        }
+
+        // MapPanel solo en /incident_maps
+        if (esMapPage) {
+            MapPanel.init();
+        }
     }
 
     if (document.readyState === 'loading') {
