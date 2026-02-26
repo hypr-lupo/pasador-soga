@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema Mapa Integrado
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      3.0
 // @description  Mapa Leaflet integrado con procedimientos en vivo y panel Última Hora. Accesible via #mapa-integrado
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -21,7 +21,7 @@
     'use strict';
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  CONFIGURACIÓN                                                ║
+    // ║  1. CONFIGURACIÓN                                             ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     const CONFIG = {
@@ -30,24 +30,123 @@
         ZOOM: 13,
         PROC_URL: '/incidents',
         ARCGIS_VISOR_URL: 'https://arcgismlc.lascondes.cl/portal/apps/webappviewer/index.html?id=118513d990134fcbb9196ac7884cfb8c',
-        // ── Cámaras ──
-        // Cuando tengas la URL del FeatureServer, ponela acá:
-        // CAMARAS_FEATURESERVER: 'https://arcgismlc.lascondes.cl/server/rest/services/NOMBRE/FeatureServer/N',
         CAMARAS_FEATURESERVER: null,
-        // ── Refresh adaptativo (segundos) ──
-        // Refresh base (segundos) por cantidad de pendientes
+        // Refresh adaptativo (segundos) por cantidad de pendientes
         REFRESH: { 0: 20, 3: 12, 10: 7, max: 5 },
-        // Categorías críticas que aceleran el refresh
         CRITICAS: ['robo', 'sospechoso'],
-        REFRESH_CRITICO: 5, // siempre 5s si hay pendientes críticos
+        REFRESH_CRITICO: 5,
         VENTANA_MIN: 60,
-        // ── Leaflet CDN ──
+        // Nominatim throttle (ms)
+        GEO_THROTTLE: 1100,
+        // Retry config
+        FETCH_MAX_RETRIES: 2,
+        FETCH_RETRY_DELAY: 2000,
+        // Leaflet CDN (fallback si @require/@resource fallan)
         LEAFLET_CSS: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
         LEAFLET_JS: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',
+        // Mapa
+        PAN_PX: 150,
+        PAN_INTERVAL: 120,
+        NEARBY_RADIUS: 250,
+        // Bounds de Las Condes
+        BOUNDS: { latMin: -33.44, latMax: -33.36, lonMin: -70.62, lonMax: -70.49 },
     };
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  CATEGORÍAS (fuente compartida con Sistema Máscara)           ║
+    // ║  2. ESTADO CENTRALIZADO                                       ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    const S = {
+        // Mapa y capas
+        map: null,
+        layers: { proc: null, cam: null, nearby: null, draw: null },
+        // Procedimientos
+        procs: { all: [], markers: new Map(), ignored: new Set() },
+        // Cámaras
+        cameras: { data: [], loaded: false },
+        // Refresh
+        refresh: { timer: null, countdown: 0 },
+        // Navegación WASD
+        wasd: { keys: new Set(), interval: null },
+        // Dibujo
+        draw: {
+            mode: null,       // null | 1 | 2 | 3
+            isDrawing: false,  // Pencil: mouse held
+            isDragging: false, // Arrow: mouse held
+            dragStart: null,
+            pencilPoints: [],
+            radiusCenter: null,
+            radiusCenterMarker: null,
+            distLabel: null,
+            temp: null,        // Layer temporal de preview
+            history: [],       // Stack para undo
+        },
+        // Ventanas externas
+        windows: { arcgis: null, gmaps: null },
+        // UI
+        ui: { container: null, clockTimer: null },
+        // Filtro
+        activeFilter: 'all',
+        // Lifecycle
+        abortController: null,
+    };
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  3. UTILIDADES                                                ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    /** Sanitiza texto para inserción segura en HTML */
+    function esc(text) {
+        if (!text) return '';
+        const d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+
+    /** Normaliza texto removiendo acentos para comparación */
+    function norm(text) {
+        return text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    }
+
+    /** Formatea distancia en metros o km */
+    function fmtDist(m) {
+        return m > 1000 ? (m / 1000).toFixed(1) + 'km' : Math.round(m) + 'm';
+    }
+
+    /** Distancia Haversine entre dos puntos [lat,lon] en metros */
+    function haversine(lat1, lon1, lat2, lon2) {
+        const R = 6371000;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat / 2) ** 2 +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLon / 2) ** 2;
+        return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    /** Verifica si coordenadas caen dentro de Las Condes */
+    function dentroDeLC(lat, lon) {
+        const b = CONFIG.BOUNDS;
+        return lat >= b.latMin && lat <= b.latMax && lon >= b.lonMin && lon <= b.lonMax;
+    }
+
+    /** Sleep helper para retry/throttle */
+    function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    /** Prepara dirección para geocoding/búsqueda */
+    function prepararDireccion(dir) {
+        return dir
+            .replace(/,\s*\d+$/, '')
+            .replace(/\(.*?\)/g, '')
+            .replace(/\.\s/g, ' CON ')
+            .replace(/\//g, ' ')
+            .replace(/LPR\s*\d+/gi, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  4. CATEGORÍAS                                                ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     const CATEGORIAS = [
@@ -74,42 +173,32 @@
         ]},
     ];
 
+    const CAT_OTRO = { id: 'otro', nombre: 'Otro', color: '#6b7280', icon: '⚪' };
+
+    // Pre-normalizar keywords una sola vez al inicio
+    const _catLookup = CATEGORIAS.map(cat => ({
+        ...cat,
+        _norms: cat.keywords.map(norm),
+    }));
+
     function clasificar(tipo) {
-        if (!tipo) return { id: 'otro', nombre: 'Otro', color: '#6b7280', icon: '⚪' };
-        const t = tipo.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-        for (const cat of CATEGORIAS) {
-            for (const kw of cat.keywords) {
-                if (t.includes(kw.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) return cat;
+        if (!tipo) return CAT_OTRO;
+        const t = norm(tipo);
+        for (const cat of _catLookup) {
+            for (const kw of cat._norms) {
+                if (t.includes(kw)) return cat;
             }
         }
-        return { id: 'otro', nombre: 'Otro', color: '#6b7280', icon: '⚪' };
+        return CAT_OTRO;
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  GEOCODING LOCAL (Nominatim + caché)                          ║
+    // ║  5. GEOCODING (Nominatim + caché + cola throttled)            ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     const geoCache = new Map();
     let geoQueue = [];
     let geoProcessing = false;
-
-    function prepararDireccion(dir) {
-        return dir
-            .replace(/,\s*\d+$/, '')
-            .replace(/\(.*?\)/g, '')
-            .replace(/\.\s/g, ' CON ')
-            .replace(/\//g, ' ')
-            .replace(/LPR\s*\d+/gi, '')
-            .replace(/\s+/g, ' ')
-            .trim();
-    }
-
-    // Bounding box de Las Condes (con margen)
-    const BOUNDS = { latMin: -33.44, latMax: -33.36, lonMin: -70.62, lonMax: -70.49 };
-
-    function dentroDeLC(lat, lon) {
-        return lat >= BOUNDS.latMin && lat <= BOUNDS.latMax && lon >= BOUNDS.lonMin && lon <= BOUNDS.lonMax;
-    }
 
     async function geocodificar(dir) {
         if (!dir) return null;
@@ -121,6 +210,7 @@
             const resp = await fetch(
                 `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}&limit=1&bounded=1&viewbox=-70.62,-33.36,-70.49,-33.44`
             );
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             const data = await resp.json();
             if (data.length > 0) {
                 const lat = parseFloat(data[0].lat);
@@ -130,18 +220,15 @@
                     geoCache.set(clave, coords);
                     return coords;
                 }
-                // Nominatim devolvió algo fuera de Las Condes — descartar
                 console.warn('[MapaIntegrado] Geocode fuera de LC:', dir, lat, lon);
             }
         } catch (e) {
             console.warn('[MapaIntegrado] Geocoding error:', e);
         }
-        // Sin geocodificación válida — retornar null (no plotear)
         geoCache.set(clave, null);
         return null;
     }
 
-    // Procesar cola con throttle (1 req/s para Nominatim)
     async function processGeoQueue() {
         if (geoProcessing) return;
         geoProcessing = true;
@@ -149,7 +236,7 @@
             const { dir, resolve } = geoQueue.shift();
             const coords = await geocodificar(dir);
             resolve(coords);
-            if (geoQueue.length > 0) await new Promise(r => setTimeout(r, 1100));
+            if (geoQueue.length > 0) await sleep(CONFIG.GEO_THROTTLE);
         }
         geoProcessing = false;
     }
@@ -164,7 +251,7 @@
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  SCRAPER DE PROCEDIMIENTOS (mismo origen, sin CORS)           ║
+    // ║  6. SCRAPER DE PROCEDIMIENTOS (con retry)                     ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function parseProcedimientosHTML(html) {
@@ -172,76 +259,69 @@
         const doc = parser.parseFromString(html, 'text/html');
         const filas = doc.querySelectorAll('table.table tbody tr');
         const resultados = [];
-        const ahora = new Date();
-        const limite = new Date(ahora.getTime() - CONFIG.VENTANA_MIN * 60000);
+        const ahora = Date.now();
+        const limite = ahora - CONFIG.VENTANA_MIN * 60000;
 
         filas.forEach(fila => {
             const celdas = fila.querySelectorAll('td');
             if (celdas.length < 7) return;
 
-            // Columnas: 0=Área, 1=Fecha, 2=Procedimiento, 3=Identificador, 4=Operador, 5=Descripción, 6=Dirección
             const fechaTexto = celdas[1]?.textContent?.trim();
             if (!fechaTexto) return;
 
             const m = fechaTexto.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})/);
             if (!m) return;
-            const fecha = new Date(parseInt(m[3]), parseInt(m[2]) - 1, parseInt(m[1]), parseInt(m[4]), parseInt(m[5]));
+            const fecha = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
 
-            if (fecha < limite) return;
+            if (fecha.getTime() < limite) return;
 
-            // Estado: badge-danger = PENDIENTE, badge-primary = CERRADO
             const areaHTML = celdas[0]?.innerHTML || '';
-            const estadoGlobal = areaHTML.includes('badge-danger') ? 'PENDIENTE' : 'CERRADO';
-
+            const estado = areaHTML.includes('badge-danger') ? 'PENDIENTE' : 'CERRADO';
             const tipo = celdas[2]?.textContent?.trim() || '';
             const id = celdas[3]?.textContent?.trim() || '';
             const operador = celdas[4]?.textContent?.trim() || '';
-
-            // Descripción: primera línea
             const descRaw = celdas[5]?.textContent?.trim() || '';
             const desc = descRaw.split('\n')[0]?.substring(0, 120) || '';
-
             const dir = celdas[6]?.textContent?.trim() || '';
 
             resultados.push({
-                fecha: fechaTexto,
-                fechaObj: fecha,
+                fecha: fechaTexto, fechaObj: fecha,
                 tipo, id, operador, desc, dir,
-                estado: estadoGlobal,
-                cat: clasificar(tipo),
+                estado, cat: clasificar(tipo),
             });
         });
 
-        // Ordenar más recientes primero
         resultados.sort((a, b) => b.fechaObj - a.fechaObj);
         return resultados;
     }
 
     async function fetchProcedimientos() {
-        try {
-            // Fetch desde mismo origen — sin CORS
-            const resp = await fetch(CONFIG.PROC_URL, {
-                credentials: 'same-origin',
-                headers: { 'Accept': 'text/html' },
-            });
-            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-            const html = await resp.text();
-            const procs = parseProcedimientosHTML(html);
-            return { procs, live: true };
-        } catch (e) {
-            console.error('[MapaIntegrado] Fetch error:', e);
-            return { procs: [], live: false };
+        let lastError = null;
+        for (let attempt = 0; attempt <= CONFIG.FETCH_MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) await sleep(CONFIG.FETCH_RETRY_DELAY * attempt);
+                const resp = await fetch(CONFIG.PROC_URL, {
+                    credentials: 'same-origin',
+                    headers: { 'Accept': 'text/html' },
+                });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const html = await resp.text();
+                return { procs: parseProcedimientosHTML(html), live: true };
+            } catch (e) {
+                lastError = e;
+                console.warn(`[MapaIntegrado] Fetch intento ${attempt + 1} fallido:`, e.message);
+            }
         }
+        console.error('[MapaIntegrado] Fetch agotó reintentos:', lastError);
+        return { procs: [], live: false };
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  CÁMARAS (FeatureServer o hardcoded)                          ║
+    // ║  7. DATOS DE CÁMARAS                                          ║
     // ╚═══════════════════════════════════════════════════════════════╝
-
-    // 1.997 cámaras reales del FeatureServer ArcGIS (10/02/2026)
-    // Formato: [lat, lon, nombre, id_cámara, dir, dest, tipo, programa]
+    // 1.997 cámaras reales. Formato: [lat, lon, barrio, id_cámara, dirección, destacamento, tipo, programa]
     // Programa: B=Barrio Protegido, R=Red Municipal, P=Postes Inteligentes, F=Refugios Inteligentes
-    // Formato: [lat, lon, nombre, id_cámara, dirección, destacamento, tipo]
+
     const CAMARAS_RAW = [
 [-33.40788,-70.54511,'','001 APOQUINDO - EL ALBA / FIJA','Apoquindo & Camino el Alba','','FIJA','R'],
 [-33.40788,-70.54511,'','001 APOQUINDO - EL ALBA / PTZ','Apoquindo & Camino el Alba','','PTZ','R'],
@@ -2242,72 +2322,50 @@
 [-33.411904,-70.535469,'RIO GUADIANA','RG-01 - RG PH (N)','RIO GUADIANA & PAUL HARRIS','SCDAPQ','FIJA','B']
     ];
 
-    // Compatibilidad con el formato anterior
-    const DESTACAMENTOS_FALLBACK = CAMARAS_RAW;
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  8. CÁMARAS: UTILIDADES                                       ║
+    // ╚═══════════════════════════════════════════════════════════════╝
 
-    // Extraer código corto según programa
-    // B (Barrio Protegido): "LG1-01" de "LG1-01 - C 490"
-    // R (Red Municipal): "001 FIJA" o "005 LPR" de "001 APOQUINDO - EL ALBA / FIJA"
-    // P (Postes Inteligentes): "PI" siempre
-    // F (Refugios Inteligentes): "RI" siempre
+    const PROG_COLOR  = { B: '#ef4444', R: '#3b82f6', P: '#22c55e', F: '#a855f7' };
+    const PROG_BORDER = { B: '#b91c1c', R: '#1d4ed8', P: '#15803d', F: '#7e22ce' };
+    const PROG_NOMBRE = { B: 'Barrio Protegido', R: 'Red Municipal', P: 'Postes Inteligentes', F: 'Refugios Inteligentes' };
+
+    /**
+     * Extrae código corto según programa de cámara.
+     * B: "LG1-01" | R: "001 FIJA" | P: "PI 01" | F: "RI 01"
+     */
     function codigoCorto(cam) {
         const id = cam.codigo || '';
         const pg = cam.programa || 'R';
         const tipo = (cam.tipo || '').toUpperCase();
 
-        if (pg === 'B') {
-            // Barrio: "LG1-01" de "LG1-01 - C 490"
-            const m = id.match(/^([A-Za-z]{1,5}\d?)-?(\d{1,2})/);
-            return m ? `${m[1]}-${m[2]}` : id.split(' ')[0] || '?';
+        switch (pg) {
+            case 'B': {
+                const m = id.match(/^([A-Za-z]{1,5}\d?)-?(\d{1,2})/);
+                return m ? `${m[1]}-${m[2]}` : id.split(' ')[0] || '?';
+            }
+            case 'R': {
+                const m = id.match(/^(\d{3})/);
+                const num = m ? m[1] : '???';
+                const t = tipo === 'LPR' ? 'LPR' : tipo === 'PTZ' ? 'PTZ' : tipo === 'FIJA' ? 'FIJA' : tipo || '';
+                return `${num} ${t}`;
+            }
+            case 'P': {
+                const m = id.match(/PI\s*(\d{1,2})/i);
+                return m ? `PI ${m[1].padStart(2, '0')}` : 'PI';
+            }
+            case 'F': {
+                const m = id.match(/RI\s*(\d{1,2})/i);
+                return m ? `RI ${m[1].padStart(2, '0')}` : 'RI';
+            }
+            default:
+                return id.substring(0, 8) || '?';
         }
-        if (pg === 'R') {
-            // Red Municipal: "001 FIJA" de "001 APOQUINDO - EL ALBA / FIJA"
-            const m = id.match(/^(\d{3})/);
-            const num = m ? m[1] : '???';
-            const t = tipo === 'LPR' ? 'LPR' : tipo === 'PTZ' ? 'PTZ' : tipo === 'FIJA' ? 'FIJA' : tipo || '';
-            return `${num} ${t}`;
-        }
-        if (pg === 'P') {
-            // Postes: "PI 01" de "PI 01 LAS CONDES..."
-            const m = id.match(/PI\s*(\d{1,2})/i);
-            return m ? `PI ${m[1].padStart(2,'0')}` : 'PI';
-        }
-        if (pg === 'F') {
-            // Refugios: "RI 01" de "RI 01 FLEMING..."
-            const m = id.match(/RI\s*(\d{1,2})/i);
-            return m ? `RI ${m[1].padStart(2,'0')}` : 'RI';
-        }
-        return id.substring(0, 8) || '?';
     }
 
-    async function fetchCamaras() {
-        // Si hay FeatureServer configurado, intentar fetch dinámico
-        if (CONFIG.CAMARAS_FEATURESERVER) {
-            try {
-                const url = `${CONFIG.CAMARAS_FEATURESERVER}/query?where=1%3D1&outFields=*&f=json&returnGeometry=true&resultRecordCount=2000`;
-                const resp = await fetch(url);
-                const data = await resp.json();
-                if (data.features && data.features.length > 0) {
-                    const isMerc = data.spatialReference?.wkid === 102100 || data.spatialReference?.wkid === 3857;
-                    return data.features.map(f => {
-                        let lat, lng;
-                        if (isMerc) {
-                            lng = (f.geometry.x / 20037508.34) * 180;
-                            lat = (Math.atan(Math.exp((f.geometry.y / 20037508.34) * Math.PI)) * 360 / Math.PI) - 90;
-                        } else { lng = f.geometry.x; lat = f.geometry.y; }
-                        return { lat, lng,
-                            nombre: f.attributes.nombre_csv || f.attributes.nombre_hik || f.attributes.Name || 'Cámara',
-                            codigo: f.attributes.id_camara || f.attributes.id_centro || '',
-                            dir: f.attributes.direccion || '',
-                            destacamento: f.attributes.destacamen || '',
-                            tipo: f.attributes.tipo_de_c || '',
-                        };
-                    });
-                }
-            } catch (e) { console.warn('[MapaIntegrado] FeatureServer fetch failed, using embedded data:', e); }
-        }
-        // Datos embebidos: 520 cámaras reales con coordenadas precisas
-        return CAMARAS_RAW.map(c => ({
+    /** Parsea array raw a objetos de cámara */
+    function parseCamarasRaw(raw) {
+        return raw.map(c => ({
             lat: c[0], lng: c[1],
             nombre: c[2] || 'Cámara',
             codigo: c[3] || '',
@@ -2318,20 +2376,52 @@
         }));
     }
 
+    /** Fetch cámaras: intenta FeatureServer, fallback a datos embebidos */
+    async function fetchCamaras() {
+        if (CONFIG.CAMARAS_FEATURESERVER) {
+            try {
+                const url = `${CONFIG.CAMARAS_FEATURESERVER}/query?where=1%3D1&outFields=*&f=json&returnGeometry=true&resultRecordCount=2000`;
+                const resp = await fetch(url);
+                const data = await resp.json();
+                if (data.features?.length > 0) {
+                    const isMerc = data.spatialReference?.wkid === 102100 || data.spatialReference?.wkid === 3857;
+                    return data.features.map(f => {
+                        let lat, lng;
+                        if (isMerc) {
+                            lng = (f.geometry.x / 20037508.34) * 180;
+                            lat = (Math.atan(Math.exp((f.geometry.y / 20037508.34) * Math.PI)) * 360 / Math.PI) - 90;
+                        } else {
+                            lng = f.geometry.x;
+                            lat = f.geometry.y;
+                        }
+                        return {
+                            lat, lng,
+                            nombre: f.attributes.nombre_csv || f.attributes.nombre_hik || f.attributes.Name || 'Cámara',
+                            codigo: f.attributes.id_camara || f.attributes.id_centro || '',
+                            dir: f.attributes.direccion || '',
+                            destacamento: f.attributes.destacamen || '',
+                            tipo: f.attributes.tipo_de_c || '',
+                            programa: 'R',
+                        };
+                    });
+                }
+            } catch (e) {
+                console.warn('[MapaIntegrado] FeatureServer fetch failed, usando datos embebidos:', e);
+            }
+        }
+        return parseCamarasRaw(CAMARAS_RAW);
+    }
+
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  CARGA DE LEAFLET                                             ║
+    // ║  9. CARGA DE LEAFLET                                          ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function cargarLeaflet() {
         return new Promise((resolve, reject) => {
-            // Leaflet JS ya cargado via @require de Tampermonkey
             if (window.L) {
-                // Inyectar CSS via @resource (bypass CSP)
                 try {
-                    const css = GM_getResourceText('LEAFLET_CSS');
-                    GM_addStyle(css);
-                } catch (e) {
-                    // Fallback: intentar link tag
+                    GM_addStyle(GM_getResourceText('LEAFLET_CSS'));
+                } catch {
                     const link = document.createElement('link');
                     link.rel = 'stylesheet';
                     link.href = CONFIG.LEAFLET_CSS;
@@ -2340,7 +2430,7 @@
                 resolve();
                 return;
             }
-            // Fallback si @require falló
+            // Fallback: carga dinámica
             const link = document.createElement('link');
             link.rel = 'stylesheet';
             link.href = CONFIG.LEAFLET_CSS;
@@ -2348,18 +2438,178 @@
 
             const s = document.createElement('script');
             s.src = CONFIG.LEAFLET_JS;
-            s.onload = () => resolve();
+            s.onload = resolve;
             s.onerror = () => reject(new Error('Leaflet load failed'));
             document.head.appendChild(s);
         });
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  UI: CONSTRUCCIÓN DE LA INTERFAZ                              ║
+    // ║  10. UI: ESTILOS                                              ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function getStyles() {
+        return `
+            #mapa-integrado-root {
+                position:fixed; inset:0; z-index:99998;
+                font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+                font-size:13px; color:#e2e4e9;
+            }
+            #mi-map { position:absolute; inset:0; z-index:1; }
+
+            /* ═══ TOPBAR ═══ */
+            #mi-topbar {
+                position:fixed; top:0; left:0; right:0; z-index:1000;
+                background:rgba(15,17,23,.92); backdrop-filter:blur(12px);
+                border-bottom:1px solid rgba(255,255,255,.06);
+                padding:8px 16px; display:flex; align-items:center; justify-content:space-between;
+                height:42px;
+            }
+            #mi-topbar .left { display:flex; align-items:center; gap:12px; }
+            #mi-topbar .right { display:flex; align-items:center; gap:16px; }
+            #mi-topbar h1 { font-size:14px; font-weight:700; color:#fff; margin:0; }
+            .mi-badge { background:rgba(37,99,235,.25); color:#60a5fa; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+            .mi-badge.live { background:rgba(16,185,129,.2); color:#34d399; }
+            .mi-badge.demo { background:rgba(245,158,11,.2); color:#fbbf24; }
+            #mi-back {
+                background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.1);
+                color:#fff; padding:4px 10px; border-radius:6px; cursor:pointer;
+                font:500 11px -apple-system,sans-serif; transition:all .2s;
+            }
+            #mi-back:hover { background:rgba(255,255,255,.15); }
+            .mi-stat { font-size:11px; color:rgba(255,255,255,.5); }
+            .mi-stat strong { color:rgba(255,255,255,.8); }
+            .mi-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:3px; }
+            .mi-dot.p { background:#f87171; } .mi-dot.c { background:#60a5fa; }
+            #mi-clock { font:600 12px -apple-system,sans-serif; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; }
+            #mi-refresh-info { font-size:10px; color:rgba(255,255,255,.35); display:flex; align-items:center; gap:4px; }
+            .mi-spinner { width:8px;height:8px;border:1.5px solid rgba(96,165,250,.3);border-top-color:#60a5fa;border-radius:50%;display:none;animation:mi-spin .5s linear infinite; }
+            .mi-spinner.on { display:inline-block; }
+            @keyframes mi-spin { to{transform:rotate(360deg)} }
+
+            /* ═══ PANEL ÚLTIMA HORA ═══ */
+            #mi-panel {
+                position:fixed; top:42px; right:0; width:340px; bottom:0; z-index:999;
+                background:rgba(15,17,23,.94); backdrop-filter:blur(16px);
+                border-left:1px solid rgba(255,255,255,.06);
+                display:flex; flex-direction:column;
+                transition:transform .25s cubic-bezier(.4,0,.2,1);
+            }
+            #mi-panel.collapsed { transform:translateX(100%); }
+            #mi-panel-toggle {
+                position:fixed; top:52px; right:352px; z-index:1001;
+                background:rgba(15,17,23,.85); border:1px solid rgba(255,255,255,.1);
+                color:#e2e4e9; padding:6px 10px; border-radius:6px; cursor:pointer;
+                font:600 11px -apple-system,sans-serif; transition:all .25s;
+            }
+            #mi-panel.collapsed ~ #mi-panel-toggle { right:12px; }
+            #mi-panel-toggle:hover { background:rgba(37,99,235,.25); }
+            #mi-panel-head {
+                padding:12px 14px 8px; border-bottom:1px solid rgba(255,255,255,.06); flex-shrink:0;
+            }
+            #mi-panel-head h3 { font-size:13px; font-weight:700; color:#fff; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+            #mi-panel-body { flex:1; overflow-y:auto; padding:2px 0; }
+            #mi-panel-body::-webkit-scrollbar { width:3px; }
+            #mi-panel-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,.12); border-radius:2px; }
+
+            .mi-sec {
+                padding:5px 14px; font:700 9px -apple-system,sans-serif;
+                text-transform:uppercase; letter-spacing:.7px; color:rgba(255,255,255,.3);
+                background:rgba(255,255,255,.02); position:sticky; top:0; z-index:2;
+            }
+            .mi-card {
+                padding:8px 14px; border-bottom:1px solid rgba(255,255,255,.03);
+                cursor:pointer; transition:background .12s; border-left:3px solid transparent;
+            }
+            .mi-card:hover { filter:brightness(1.3); }
+            .mi-card.new { animation:mi-flash .6s ease 2; }
+            @keyframes mi-flash { 0%,100%{background:transparent} 50%{background:rgba(251,191,36,.1)} }
+
+            .mi-card-top { display:flex; justify-content:space-between; align-items:flex-start; gap:6px; margin-bottom:3px; }
+            .mi-card-tipo { font-size:11px; font-weight:600; color:#fff; flex:1; }
+            .mi-card-est {
+                font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px;
+                text-transform:uppercase; letter-spacing:.2px; flex-shrink:0;
+            }
+            .mi-card-est.p { background:rgba(239,68,68,.12); color:#f87171; }
+            .mi-card-est.c { background:rgba(96,165,250,.1); color:#60a5fa; }
+            .mi-card-meta { font-size:9px; color:rgba(255,255,255,.35); display:flex; gap:6px; margin-bottom:2px; }
+            .mi-card-id { cursor:pointer; transition:color .12s; }
+            .mi-card-id:hover { color:#60a5fa; text-decoration:underline; }
+            .mi-card-id.copied { color:#34d399; }
+            .mi-card-dir { font-size:10px; color:rgba(255,255,255,.5); }
+            .mi-card-btns { display:flex; gap:3px; margin-top:4px; }
+            .mi-card-btns button {
+                background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.07);
+                color:rgba(255,255,255,.45); padding:1px 6px; border-radius:3px;
+                font:500 8px -apple-system,sans-serif; cursor:pointer; transition:all .12s;
+            }
+            .mi-card-btns button:hover { background:rgba(37,99,235,.18); color:#60a5fa; border-color:rgba(37,99,235,.3); }
+
+            /* ═══ LEYENDA ═══ */
+            #mi-legend {
+                position:fixed; bottom:12px; left:12px; z-index:999;
+                background:rgba(15,17,23,.88); backdrop-filter:blur(8px);
+                border:1px solid rgba(255,255,255,.08); border-radius:6px;
+                padding:6px 10px; font-size:9px;
+            }
+            #mi-legend h4 { font:600 9px -apple-system,sans-serif; color:rgba(255,255,255,.4); margin:0 0 3px; text-transform:uppercase; letter-spacing:.5px; }
+            .mi-leg { display:flex; align-items:center; gap:5px; margin:1px 0; color:rgba(255,255,255,.45); }
+            .mi-leg-d { width:7px; height:7px; border-radius:50%; }
+
+            .mi-cursor-tooltip {
+                background:rgba(0,0,0,.8)!important; border:1px solid rgba(52,211,153,.4)!important;
+                color:#34d399!important; font:700 12px -apple-system,sans-serif!important;
+                padding:2px 6px!important; border-radius:4px!important; box-shadow:none!important;
+            }
+            .mi-cursor-tooltip::before { display:none!important; }
+
+            /* ═══ NEARBY CAMERA LABELS ═══ */
+            .mi-nearby-label {
+                background:rgba(0,0,0,.85); backdrop-filter:blur(6px);
+                border-radius:4px; padding:3px 6px;
+                font:700 10px -apple-system,sans-serif;
+                white-space:nowrap; pointer-events:none;
+                border:1px solid rgba(255,255,255,.15);
+                box-shadow:0 2px 8px rgba(0,0,0,.5);
+                line-height:1.3;
+            }
+            .mi-nearby-square {
+                display:inline-block; width:6px; height:6px;
+                border-radius:1px; margin-right:3px; vertical-align:middle;
+            }
+
+            .mi-cam-popup .leaflet-popup-content-wrapper { padding:0!important; min-width:auto!important; }
+            .mi-cam-popup .leaflet-popup-content { margin:5px 8px!important; }
+
+            /* ═══ LEAFLET POPUP OVERRIDE ═══ */
+            .leaflet-popup-content-wrapper {
+                background:rgba(15,17,23,.95)!important; backdrop-filter:blur(12px);
+                border:1px solid rgba(255,255,255,.1)!important; border-radius:8px!important;
+                color:#e2e4e9!important; box-shadow:0 8px 32px rgba(0,0,0,.5)!important;
+            }
+            .leaflet-popup-tip { background:rgba(15,17,23,.95)!important; }
+            .mi-proc-popup .leaflet-popup-content-wrapper {
+                background:rgba(15,17,23,.55)!important; border-color:rgba(255,255,255,.06)!important;
+                box-shadow:0 2px 12px rgba(0,0,0,.3)!important; backdrop-filter:blur(6px)!important;
+                overflow:hidden!important;
+            }
+            .mi-proc-popup .leaflet-popup-content { margin:8px 12px 8px!important; }
+            .mi-proc-popup .leaflet-popup-tip { background:rgba(15,17,23,.55)!important; }
+            .mi-proc-popup { pointer-events:none; }
+            .mi-proc-popup .leaflet-popup-content-wrapper { pointer-events:auto; }
+            .leaflet-popup-content { margin:8px 12px!important; font:12px -apple-system,sans-serif!important; line-height:1.4!important; }
+            .mi-popup-tipo { font-weight:700; font-size:13px; margin-bottom:3px; }
+            .mi-popup-dir { color:rgba(255,255,255,.55); font-size:11px; margin-bottom:4px; }
+            .mi-popup-meta { font-size:10px; color:rgba(255,255,255,.35); }
+        `;
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  11. UI: CONSTRUCCIÓN                                         ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function construirUI() {
-        // Ocultar contenido original
         const wrapper = document.getElementById('page-wrapper');
         if (wrapper) wrapper.style.display = 'none';
         const sidebar = document.querySelector('.navbar-default.navbar-static-side');
@@ -2368,167 +2618,7 @@
         const container = document.createElement('div');
         container.id = 'mapa-integrado-root';
         container.innerHTML = `
-            <style>
-                #mapa-integrado-root {
-                    position:fixed; inset:0; z-index:99998;
-                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-                    font-size:13px; color:#e2e4e9;
-                }
-                #mi-map { position:absolute; inset:0; z-index:1; }
-
-                /* ═══ TOPBAR ═══ */
-                #mi-topbar {
-                    position:fixed; top:0; left:0; right:0; z-index:1000;
-                    background:rgba(15,17,23,.92); backdrop-filter:blur(12px);
-                    border-bottom:1px solid rgba(255,255,255,.06);
-                    padding:8px 16px; display:flex; align-items:center; justify-content:space-between;
-                    height:42px;
-                }
-                #mi-topbar .left { display:flex; align-items:center; gap:12px; }
-                #mi-topbar .right { display:flex; align-items:center; gap:16px; }
-                #mi-topbar h1 { font-size:14px; font-weight:700; color:#fff; margin:0; }
-                .mi-badge { background:rgba(37,99,235,.25); color:#60a5fa; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
-                .mi-badge.live { background:rgba(16,185,129,.2); color:#34d399; }
-                .mi-badge.demo { background:rgba(245,158,11,.2); color:#fbbf24; }
-                #mi-back {
-                    background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.1);
-                    color:#fff; padding:4px 10px; border-radius:6px; cursor:pointer;
-                    font:500 11px -apple-system,sans-serif; transition:all .2s;
-                }
-                #mi-back:hover { background:rgba(255,255,255,.15); }
-                .mi-stat { font-size:11px; color:rgba(255,255,255,.5); }
-                .mi-stat strong { color:rgba(255,255,255,.8); }
-                .mi-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:3px; }
-                .mi-dot.p { background:#f87171; } .mi-dot.c { background:#60a5fa; }
-                #mi-clock { font:600 12px -apple-system,sans-serif; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; }
-                #mi-refresh-info { font-size:10px; color:rgba(255,255,255,.35); display:flex; align-items:center; gap:4px; }
-                .mi-spinner { width:8px;height:8px;border:1.5px solid rgba(96,165,250,.3);border-top-color:#60a5fa;border-radius:50%;display:none;animation:mi-spin .5s linear infinite; }
-                .mi-spinner.on { display:inline-block; }
-                @keyframes mi-spin { to{transform:rotate(360deg)} }
-
-                /* ═══ PANEL ÚLTIMA HORA ═══ */
-                #mi-panel {
-                    position:fixed; top:42px; right:0; width:340px; bottom:0; z-index:999;
-                    background:rgba(15,17,23,.94); backdrop-filter:blur(16px);
-                    border-left:1px solid rgba(255,255,255,.06);
-                    display:flex; flex-direction:column;
-                    transition:transform .25s cubic-bezier(.4,0,.2,1);
-                }
-                #mi-panel.collapsed { transform:translateX(100%); }
-                #mi-panel-toggle {
-                    position:fixed; top:52px; right:352px; z-index:1001;
-                    background:rgba(15,17,23,.85); border:1px solid rgba(255,255,255,.1);
-                    color:#e2e4e9; padding:6px 10px; border-radius:6px; cursor:pointer;
-                    font:600 11px -apple-system,sans-serif; transition:all .25s;
-                }
-                #mi-panel.collapsed ~ #mi-panel-toggle { right:12px; }
-                #mi-panel-toggle:hover { background:rgba(37,99,235,.25); }
-
-                #mi-panel-head {
-                    padding:12px 14px 8px; border-bottom:1px solid rgba(255,255,255,.06); flex-shrink:0;
-                }
-                #mi-panel-head h3 { font-size:13px; font-weight:700; color:#fff; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
-
-
-
-                #mi-panel-body { flex:1; overflow-y:auto; padding:2px 0; }
-                #mi-panel-body::-webkit-scrollbar { width:3px; }
-                #mi-panel-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,.12); border-radius:2px; }
-
-                .mi-sec {
-                    padding:5px 14px; font:700 9px -apple-system,sans-serif;
-                    text-transform:uppercase; letter-spacing:.7px; color:rgba(255,255,255,.3);
-                    background:rgba(255,255,255,.02); position:sticky; top:0; z-index:2;
-                }
-
-                .mi-card {
-                    padding:8px 14px; border-bottom:1px solid rgba(255,255,255,.03);
-                    cursor:pointer; transition:background .12s; border-left:3px solid transparent;
-                }
-                .mi-card:hover { filter:brightness(1.3); }
-                .mi-card.new { animation:mi-flash .6s ease 2; }
-                @keyframes mi-flash { 0%,100%{background:transparent} 50%{background:rgba(251,191,36,.1)} }
-
-                .mi-card-top { display:flex; justify-content:space-between; align-items:flex-start; gap:6px; margin-bottom:3px; }
-                .mi-card-tipo { font-size:11px; font-weight:600; color:#fff; flex:1; }
-                .mi-card-est {
-                    font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px;
-                    text-transform:uppercase; letter-spacing:.2px; flex-shrink:0;
-                }
-                .mi-card-est.p { background:rgba(239,68,68,.12); color:#f87171; }
-                .mi-card-est.c { background:rgba(96,165,250,.1); color:#60a5fa; }
-
-                .mi-card-meta { font-size:9px; color:rgba(255,255,255,.35); display:flex; gap:6px; margin-bottom:2px; }
-                .mi-card-id { cursor:pointer; transition:color .12s; }
-                .mi-card-id:hover { color:#60a5fa; text-decoration:underline; }
-                .mi-card-id.copied { color:#34d399; }
-                .mi-card-dir { font-size:10px; color:rgba(255,255,255,.5); }
-
-                .mi-card-btns { display:flex; gap:3px; margin-top:4px; }
-                .mi-card-btns button {
-                    background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.07);
-                    color:rgba(255,255,255,.45); padding:1px 6px; border-radius:3px;
-                    font:500 8px -apple-system,sans-serif; cursor:pointer; transition:all .12s;
-                }
-                .mi-card-btns button:hover { background:rgba(37,99,235,.18); color:#60a5fa; border-color:rgba(37,99,235,.3); }
-
-                /* ═══ LEYENDA ═══ */
-                #mi-legend {
-                    position:fixed; bottom:12px; left:12px; z-index:999;
-                    background:rgba(15,17,23,.88); backdrop-filter:blur(8px);
-                    border:1px solid rgba(255,255,255,.08); border-radius:6px;
-                    padding:6px 10px; font-size:9px;
-                }
-                #mi-legend h4 { font:600 9px -apple-system,sans-serif; color:rgba(255,255,255,.4); margin:0 0 3px; text-transform:uppercase; letter-spacing:.5px; }
-                .mi-leg { display:flex; align-items:center; gap:5px; margin:1px 0; color:rgba(255,255,255,.45); }
-                .mi-leg-d { width:7px; height:7px; border-radius:50%; }
-
-                .mi-cursor-tooltip {
-                    background:rgba(0,0,0,.8)!important; border:1px solid rgba(52,211,153,.4)!important;
-                    color:#34d399!important; font:700 12px -apple-system,sans-serif!important;
-                    padding:2px 6px!important; border-radius:4px!important; box-shadow:none!important;
-                }
-                .mi-cursor-tooltip::before { display:none!important; }
-
-                /* ═══ NEARBY CAMERA LABELS ═══ */
-                .mi-nearby-label {
-                    background:rgba(0,0,0,.85); backdrop-filter:blur(6px);
-                    border-radius:4px; padding:3px 6px;
-                    font:700 10px -apple-system,sans-serif;
-                    white-space:nowrap; pointer-events:none;
-                    border:1px solid rgba(255,255,255,.15);
-                    box-shadow:0 2px 8px rgba(0,0,0,.5);
-                    line-height:1.3;
-                }
-                .mi-nearby-square {
-                    display:inline-block; width:6px; height:6px;
-                    border-radius:1px; margin-right:3px; vertical-align:middle;
-                }
-
-                .mi-cam-popup .leaflet-popup-content-wrapper {
-                    padding:0!important; min-width:auto!important;
-                }
-                .mi-cam-popup .leaflet-popup-content { margin:5px 8px!important; }
-
-                /* ═══ LEAFLET POPUP OVERRIDE ═══ */
-                .leaflet-popup-content-wrapper {
-                    background:rgba(15,17,23,.95)!important; backdrop-filter:blur(12px);
-                    border:1px solid rgba(255,255,255,.1)!important; border-radius:8px!important;
-                    color:#e2e4e9!important; box-shadow:0 8px 32px rgba(0,0,0,.5)!important;
-                }
-                .leaflet-popup-tip { background:rgba(15,17,23,.95)!important; }
-                .mi-proc-popup .leaflet-popup-content-wrapper {
-                    background:rgba(15,17,23,.45)!important; border-color:rgba(255,255,255,.05)!important;
-                    box-shadow:0 2px 8px rgba(0,0,0,.2)!important; backdrop-filter:blur(4px)!important;
-                }
-                .mi-proc-popup .leaflet-popup-tip { background:rgba(15,17,23,.45)!important; }
-                .mi-proc-popup { pointer-events:none; }
-                .mi-proc-popup .leaflet-popup-content-wrapper { pointer-events:auto; }
-                .leaflet-popup-content { margin:8px 12px!important; font:12px -apple-system,sans-serif!important; line-height:1.4!important; }
-                .mi-popup-tipo { font-weight:700; font-size:13px; margin-bottom:3px; }
-                .mi-popup-dir { color:rgba(255,255,255,.55); font-size:11px; margin-bottom:4px; }
-                .mi-popup-meta { font-size:10px; color:rgba(255,255,255,.35); }
-            </style>
+            <style>${getStyles()}</style>
 
             <!-- TOPBAR -->
             <div id="mi-topbar">
@@ -2538,13 +2628,14 @@
                     <span class="mi-badge" id="mi-mode">Conectando...</span>
                 </div>
                 <div class="right">
-                    <span class="mi-stat"><span class="mi-dot p"></span>Pend: <strong id="mi-cnt-p">0</strong></span>
-                    <span class="mi-stat"><span class="mi-dot c"></span>Cerr: <strong id="mi-cnt-c">0</strong></span>
+                    <span class="mi-stat"><span class="mi-dot p"></span>Activos: <strong id="mi-cnt-p">0</strong></span>
+                    <span class="mi-stat"><span class="mi-dot c"></span>Ignorados: <strong id="mi-cnt-c">0</strong></span>
                     <span id="mi-refresh-info">
                         <span class="mi-spinner" id="mi-spinner"></span>
-                        <span>⟳ <strong id="mi-countdown">--</strong>s</span>
+                        <span id="mi-clock">--:--:--</span>
+                        <span style="color:rgba(255,255,255,.15)">·</span>
+                        <span>⟳ <span id="mi-countdown">--</span>s</span>
                     </span>
-                    <span id="mi-clock">--:--:--</span>
                 </div>
             </div>
 
@@ -2554,244 +2645,561 @@
             <!-- PANEL -->
             <div id="mi-panel">
                 <div id="mi-panel-head">
-                    <h3>⏰ Última Hora <span class="mi-badge" id="mi-proc-cnt">0</span></h3>
+                    <h3>Pendientes <span class="mi-badge" id="mi-proc-cnt">0</span></h3>
                 </div>
-
                 <div id="mi-panel-body"></div>
             </div>
             <button id="mi-panel-toggle">◀</button>
 
             <!-- LEYENDA -->
             <div id="mi-legend">
-                <h4>Leyenda</h4>
-                ${CATEGORIAS.map(c => `<div class="mi-leg"><span class="mi-leg-d" style="background:${c.color}"></span>${c.nombre}</div>`).join('')}
-                <div style="margin-top:4px;padding-top:3px;border-top:1px solid rgba(255,255,255,.08)">
-                    <div class="mi-leg"><span class="mi-leg-d" style="background:#ef4444;border-radius:1px"></span>Barrio Protegido (802)</div>
-                    <div class="mi-leg"><span class="mi-leg-d" style="background:#3b82f6;border-radius:1px"></span>Red Municipal (716)</div>
-                    <div class="mi-leg"><span class="mi-leg-d" style="background:#22c55e;border-radius:1px"></span>Postes Inteligentes (359)</div>
-                    <div class="mi-leg"><span class="mi-leg-d" style="background:#a855f7;border-radius:1px"></span>Refugios Inteligentes (120)</div>
-                </div>
-                <div style="margin-top:5px;padding-top:4px;border-top:1px solid rgba(255,255,255,.06)">
-                    <div style="font:600 8px -apple-system,sans-serif;color:rgba(255,255,255,.25);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Controles</div>
-                    <div class="mi-leg" style="color:rgba(255,255,255,.3)">WASD — mover mapa</div>
-                    <div class="mi-leg" style="color:rgba(255,255,255,.3)">+/- — zoom</div>
-                    <div class="mi-leg" style="color:rgba(255,255,255,.3)"><span style="color:#fbbf24">1</span> lápiz <span style="color:#f472b6">2</span> flecha <span style="color:#34d399">3</span> radio</div>
-                    <div class="mi-leg" style="color:rgba(255,255,255,.3)">| deshacer · 0 borrar todo</div>
-                    <div class="mi-leg" style="color:rgba(255,255,255,.3)">ESC — cancelar</div>
+                <h4>Cámaras</h4>
+                <div class="mi-leg"><span class="mi-leg-d" style="background:#ef4444;border-radius:1px"></span>Barrio Protegido</div>
+                <div class="mi-leg"><span class="mi-leg-d" style="background:#3b82f6;border-radius:1px"></span>Red Municipal</div>
+                <div class="mi-leg"><span class="mi-leg-d" style="background:#22c55e;border-radius:1px"></span>Postes Inteligentes</div>
+                <div class="mi-leg"><span class="mi-leg-d" style="background:#a855f7;border-radius:1px"></span>Refugios Inteligentes</div>
+                <div style="margin-top:4px;padding-top:3px;border-top:1px solid rgba(255,255,255,.06)">
+                    <div style="font:600 8px -apple-system,sans-serif;color:rgba(255,255,255,.2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Controles</div>
+                    <div class="mi-leg" style="color:rgba(255,255,255,.25)">WASD mover · +/- zoom</div>
+                    <div class="mi-leg" style="color:rgba(255,255,255,.25)"><span style="color:#fbbf24">1</span> lápiz <span style="color:#f472b6">2</span> flecha <span style="color:#34d399">3</span> radio</div>
+                    <div class="mi-leg" style="color:rgba(255,255,255,.25)">| Ctrl+Z deshacer · 0 borrar</div>
                 </div>
             </div>
         `;
 
         document.body.appendChild(container);
-
-        // Filtros
-
-
+        S.ui.container = container;
         return container;
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  APP CONTROLLER                                               ║
+    // ║  12. SISTEMA DE DIBUJO                                        ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
-    let map, procLayer, camLayer, nearbyLayer;
-    let allProcs = [];
-    let activeFilter = 'all';
-    let procMarkers = new Map();
-    let allCamarasData = []; // Store camera data for proximity search
-    let refreshTimer = null;
-    let countdownVal = 0;
-    let arcgisWindow = null;
-    let gmapsWindow = null;
+    const DRAW_COLORS = { 1: '#fbbf24', 2: '#f472b6', 3: '#34d399' };
+    const DRAW_NAMES  = { 1: 'Lápiz', 2: 'Flecha', 3: 'Radio' };
 
-    async function iniciarMapa(container) {
-        try {
-            await cargarLeaflet();
-        } catch (e) {
-            console.error('[MapaIntegrado] Leaflet failed to load:', e);
-            container.querySelector('#mi-mode').textContent = '⚠ Error cargando mapa';
-            container.querySelector('#mi-mode').className = 'mi-badge demo';
-            return;
-        }
-        if (!window.L) {
-            console.error('[MapaIntegrado] Leaflet not available');
-            container.querySelector('#mi-mode').textContent = '⚠ Leaflet no disponible';
-            container.querySelector('#mi-mode').className = 'mi-badge demo';
-            return;
-        }
-
-        map = L.map('mi-map', {
-            center: CONFIG.CENTER,
-            zoom: CONFIG.ZOOM,
-            zoomControl: false,
-            attributionControl: false,
-            dragging: false,
-            keyboard: false, // WASD custom handles this
-        });
-
-        // Tile: OpenStreetMap estándar — calles legibles
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            maxZoom: 19,
-        }).addTo(map);
-
-        L.control.zoom({ position: 'topleft' }).addTo(map);
-        map.doubleClickZoom.disable(); // dblclick used for draw finalization
-
-        procLayer = L.layerGroup().addTo(map);
-        camLayer = L.layerGroup().addTo(map);
-
-        // ── Cargar cámaras ──
-        const camaras = await fetchCamaras();
-        allCamarasData = camaras;
-        nearbyLayer = L.layerGroup().addTo(map);
-        // Colores por programa: B=Rojo, R=Azul, P=Verde, F=Morado
-        const progColor = { B: '#ef4444', R: '#3b82f6', P: '#22c55e', F: '#a855f7' };
-        const progNombre = { B: 'Barrio Protegido', R: 'Red Municipal', P: 'Postes Inteligentes', F: 'Refugios Inteligentes' };
-        const progBorder = { B: '#b91c1c', R: '#1d4ed8', P: '#15803d', F: '#7e22ce' };
-
-        camaras.forEach(cam => {
-            const pg = cam.programa || 'R';
-            const color = progColor[pg] || '#3b82f6';
-            const border = progBorder[pg] || '#1d4ed8';
-            const short = codigoCorto(cam);
-            const shortClean = short.replace(/'/g, "\\'");
-
-            const size = 11;
-            const icon = L.divIcon({
-                className: '',
-                html: `<div style="width:${size}px;height:${size}px;background:${color};border:1.5px solid ${border};opacity:0.75;border-radius:1px;cursor:pointer;transition:transform .1s;"></div>`,
-                iconSize: [size, size],
-                iconAnchor: [size/2, size/2],
-            });
-
-            L.marker([cam.lat, cam.lng], { icon }).bindPopup(`
-                <div style="text-align:center;min-width:50px">
-                    <div style="font:700 13px -apple-system,sans-serif;color:${color};cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.2);padding-bottom:2px"
-                         onclick="navigator.clipboard.writeText('${shortClean}').then(()=>{this.style.color='#34d399';this.textContent='✓';setTimeout(()=>{this.style.color='${color}';this.textContent='${shortClean}'},800)})"
-                    >${short}</div>
-                    ${cam.dir ? `<div style="font-size:9px;color:rgba(255,255,255,.35);margin-top:2px">${cam.dir}</div>` : ''}
-                </div>
-            `, { closeButton: false, className: 'mi-cam-popup' }).addTo(camLayer);
-        });
-
-        // ── Dibujo ──
-        drawLayer = L.layerGroup().addTo(map);
-        setupDrawHandlers();
-
-        // ── Eventos UI ──
-        container.querySelector('#mi-back').addEventListener('click', salir);
-        container.querySelector('#mi-panel-toggle').addEventListener('click', () => {
-            const panel = container.querySelector('#mi-panel');
-            panel.classList.toggle('collapsed');
-            container.querySelector('#mi-panel-toggle').textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
-        });
-
-
-        // ── Reloj ──
-        setInterval(() => {
-            const now = new Date();
-            container.querySelector('#mi-clock').textContent = now.toLocaleTimeString('es-CL', { hour12: false });
-        }, 1000);
-
-        // ── WASD para mover el mapa ──
-        const PAN_PX = 150;
-        const wasdKeys = new Set();
-        let wasdInterval = null;
-
-        function wasdTick() {
-            let dx = 0, dy = 0;
-            if (wasdKeys.has('a') || wasdKeys.has('arrowleft'))  dx -= PAN_PX;
-            if (wasdKeys.has('d') || wasdKeys.has('arrowright')) dx += PAN_PX;
-            if (wasdKeys.has('w') || wasdKeys.has('arrowup'))    dy -= PAN_PX;
-            if (wasdKeys.has('s') || wasdKeys.has('arrowdown'))  dy += PAN_PX;
-            if (dx !== 0 || dy !== 0) map.panBy([dx, dy], { animate: true, duration: 0.15 });
-        }
-
-        document.addEventListener('keydown', (e) => {
-            // Ignorar si se está escribiendo en un input
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-            if (!document.getElementById('mapa-integrado-root')) return;
-
-            const key = e.key.toLowerCase();
-
-            // Ctrl+Z = undo
-            if ((e.ctrlKey || e.metaKey) && key === 'z') {
-                e.preventDefault();
-                undoLastDraw();
-                return;
-            }
-
-            // WASD + flechas para pan
-            if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key)) {
-                e.preventDefault();
-                if (!wasdKeys.has(key)) {
-                    wasdKeys.add(key);
-                    if (!wasdInterval) {
-                        wasdTick(); // Inmediato
-                        wasdInterval = setInterval(wasdTick, 120);
-                    }
-                }
-                return;
-            }
-
-            // Zoom con +/-
-            if (key === '+' || key === '=') { e.preventDefault(); map.zoomIn(); return; }
-            if (key === '-') { e.preventDefault(); map.zoomOut(); return; }
-
-            // ── Hotkeys de dibujo: 1=Lápiz, 2=Flecha, 3=Radio ──
-            if (['1','2','3'].includes(key)) {
-                e.preventDefault();
-                activarHerramientaDibujo(parseInt(key));
-                return;
-            }
-
-            // | (pipe/backslash) = undo último dibujo
-            if (key === '\\' || key === '|' || e.code === 'Backslash') {
-                e.preventDefault();
-                undoLastDraw();
-                return;
-            }
-
-            // 0 or Delete: borrar todos los dibujos
-            if (key === '0' || key === 'delete') {
-                e.preventDefault();
-                if (drawLayer) drawLayer.clearLayers();
-                drawHistory = [];
-                radiusCenterMarker = null;
-                radiusCenter = null;
-                desactivarDibujo();
-                return;
-            }
-
-            // Escape: cancelar dibujo o cerrar popups
-            if (key === 'escape') {
-                e.preventDefault();
-                if (drawMode) {
-                    desactivarDibujo();
-                } else {
-                    map.closePopup();
-                    nearbyLayer.clearLayers();
-                }
-                return;
-            }
-        });
-
-        document.addEventListener('keyup', (e) => {
-            const key = e.key.toLowerCase();
-            wasdKeys.delete(key);
-            if (wasdKeys.size === 0 && wasdInterval) {
-                clearInterval(wasdInterval);
-                wasdInterval = null;
-            }
-        });
-
-        // ── Primera carga ──
-        await refreshData(container);
-        startRefreshCycle(container);
+    function activarHerramientaDibujo(tool) {
+        const d = S.draw;
+        if (d.mode === tool) { desactivarDibujo(); return; }
+        desactivarDibujo();
+        d.mode = tool;
+        if (!S.layers.draw) S.layers.draw = L.layerGroup().addTo(S.map);
+        S.map.getContainer().style.cursor = 'crosshair';
+        actualizarIndicadorDibujo();
     }
 
-    async function refreshData(container) {
-        container.querySelector('#mi-spinner').classList.add('on');
+    function desactivarDibujo() {
+        const d = S.draw;
+        d.mode = null;
+        d.isDrawing = false;
+        d.isDragging = false;
+        d.dragStart = null;
+        d.pencilPoints = [];
+        if (d.radiusCenterMarker) { S.layers.draw?.removeLayer(d.radiusCenterMarker); d.radiusCenterMarker = null; }
+        d.radiusCenter = null;
+        if (d.temp) { S.layers.draw?.removeLayer(d.temp); d.temp = null; }
+        hideDistLabel();
+        if (S.map) S.map.getContainer().style.cursor = '';
+        actualizarIndicadorDibujo();
+    }
+
+    function undoLastDraw() {
+        const d = S.draw;
+        if (d.history.length === 0) return;
+        const last = d.history.pop();
+        if (S.layers.draw) S.layers.draw.removeLayer(last);
+    }
+
+    function actualizarIndicadorDibujo(customMsg) {
+        let indicator = document.getElementById('mi-draw-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'mi-draw-indicator';
+            indicator.style.cssText = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:1001;background:rgba(15,17,23,.92);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:6px 14px;font:600 11px -apple-system,sans-serif;color:#fff;display:none;pointer-events:none;';
+            document.getElementById('mapa-integrado-root')?.appendChild(indicator);
+        }
+        const d = S.draw;
+        if (d.mode) {
+            const color = DRAW_COLORS[d.mode];
+            indicator.innerHTML = customMsg
+                ? `<span style="color:${color}">● </span>${esc(customMsg)} · <span style="color:rgba(255,255,255,.4)">ESC cancelar</span>`
+                : `<span style="color:${color}">● ${DRAW_NAMES[d.mode]}</span> — Click en mapa · <span style="color:rgba(255,255,255,.4)">ESC cancelar</span>`;
+            indicator.style.display = 'block';
+        } else {
+            indicator.style.display = 'none';
+        }
+    }
+
+    // ── Floating distance label ──
+    function showDistLabel(text) {
+        const d = S.draw;
+        if (!d.distLabel) {
+            d.distLabel = document.createElement('div');
+            d.distLabel.style.cssText = 'position:fixed;z-index:1002;background:rgba(0,0,0,.8);color:#fff;font:700 11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;pointer-events:none;display:none;';
+            document.getElementById('mapa-integrado-root')?.appendChild(d.distLabel);
+        }
+        d.distLabel.textContent = text;
+        d.distLabel.style.display = 'block';
+    }
+
+    function moveDistLabel(e) {
+        const dl = S.draw.distLabel;
+        if (dl && dl.style.display !== 'none') {
+            dl.style.left = (e.clientX + 14) + 'px';
+            dl.style.top = (e.clientY - 10) + 'px';
+        }
+    }
+
+    function hideDistLabel() {
+        const dl = S.draw.distLabel;
+        if (dl) dl.style.display = 'none';
+    }
+
+    /** Convierte evento mouse a latlng del mapa */
+    function mouseToLatLng(e) {
+        const rect = S.map.getContainer().getBoundingClientRect();
+        return S.map.containerPointToLatLng(L.point(e.clientX - rect.left, e.clientY - rect.top));
+    }
+
+    /** Crea flecha con punta triangular sólida */
+    function crearFlecha(from, to) {
+        const color = DRAW_COLORS[2];
+        const group = L.layerGroup();
+
+        L.polyline([from, to], { color, weight: 5, opacity: 0.9, lineCap: 'round' }).addTo(group);
+
+        const fromPx = S.map.latLngToContainerPoint(from);
+        const toPx = S.map.latLngToContainerPoint(to);
+        const dx = toPx.x - fromPx.x;
+        const dy = toPx.y - fromPx.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len < 8) return group;
+
+        const ux = dx / len, uy = dy / len;
+        const px = -uy, py = ux;
+        const headLen = Math.min(24, len * 0.35);
+        const headW = headLen * 0.55;
+
+        const basePx = L.point(toPx.x - ux * headLen, toPx.y - uy * headLen);
+        const leftPx = L.point(basePx.x + px * headW, basePx.y + py * headW);
+        const rightPx = L.point(basePx.x - px * headW, basePx.y - py * headW);
+
+        const tip = S.map.containerPointToLatLng(toPx);
+        const left = S.map.containerPointToLatLng(leftPx);
+        const right = S.map.containerPointToLatLng(rightPx);
+
+        L.polygon([tip, left, right], { color, fillColor: color, fillOpacity: 1, weight: 0 }).addTo(group);
+        return group;
+    }
+
+    /** Registra handlers de dibujo en el mapa (usa AbortController) */
+    function setupDrawHandlers(signal) {
+        const mapEl = S.map.getContainer();
+        const d = S.draw;
+
+        // Global mousemove para dist label
+        document.addEventListener('mousemove', moveDistLabel, { signal });
+
+        // ══ TOOL 1: LÁPIZ FREEHAND ══
+        mapEl.addEventListener('mousedown', (e) => {
+            if (d.mode !== 1 || e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            d.isDrawing = true;
+            d.pencilPoints = [mouseToLatLng(e)];
+            d.temp = L.polyline(d.pencilPoints, {
+                color: DRAW_COLORS[1], weight: 3, opacity: 0.85,
+                lineCap: 'round', lineJoin: 'round', smoothFactor: 1,
+            }).addTo(S.layers.draw);
+        }, { capture: true, signal });
+
+        mapEl.addEventListener('mousemove', (e) => {
+            if (d.mode !== 1 || !d.isDrawing || !d.temp) return;
+            e.preventDefault();
+            d.pencilPoints.push(mouseToLatLng(e));
+            d.temp.setLatLngs(d.pencilPoints);
+        }, { capture: true, signal });
+
+        mapEl.addEventListener('mouseup', () => {
+            if (d.mode !== 1 || !d.isDrawing) return;
+            d.isDrawing = false;
+            if (d.temp && d.pencilPoints.length > 3) {
+                d.history.push(d.temp);
+            } else if (d.temp) {
+                S.layers.draw.removeLayer(d.temp);
+            }
+            d.temp = null;
+            d.pencilPoints = [];
+        }, { capture: true, signal });
+
+        // ══ TOOL 2: FLECHA ══
+        mapEl.addEventListener('mousedown', (e) => {
+            if (d.mode !== 2 || e.button !== 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            d.isDragging = true;
+            d.dragStart = mouseToLatLng(e);
+            if (d.temp) { S.layers.draw.removeLayer(d.temp); d.temp = null; }
+        }, { capture: true, signal });
+
+        mapEl.addEventListener('mousemove', (e) => {
+            if (d.mode !== 2 || !d.isDragging || !d.dragStart) return;
+            e.preventDefault();
+            const current = mouseToLatLng(e);
+            const dist = d.dragStart.distanceTo(current);
+            if (d.temp) S.layers.draw.removeLayer(d.temp);
+            d.temp = crearFlecha(d.dragStart, current);
+            d.temp.addTo(S.layers.draw);
+            showDistLabel(fmtDist(dist));
+            actualizarIndicadorDibujo('Flecha — ' + fmtDist(dist));
+        }, { capture: true, signal });
+
+        mapEl.addEventListener('mouseup', (e) => {
+            if (d.mode !== 2 || !d.isDragging || !d.dragStart) return;
+            d.isDragging = false;
+            hideDistLabel();
+            const end = mouseToLatLng(e);
+            const dist = d.dragStart.distanceTo(end);
+            if (dist < 10) {
+                if (d.temp) { S.layers.draw.removeLayer(d.temp); d.temp = null; }
+            } else if (d.temp) {
+                d.history.push(d.temp);
+                d.temp = null;
+            }
+            d.dragStart = null;
+            actualizarIndicadorDibujo('Flecha — Arrastra inicio → fin');
+        }, { capture: true, signal });
+
+        // ══ TOOL 3: RADIO ══
+        S.map.on('click', (e) => {
+            if (d.mode !== 3) return;
+            const latlng = e.latlng;
+            const color = DRAW_COLORS[3];
+
+            if (!d.radiusCenter) {
+                d.radiusCenter = latlng;
+                d.radiusCenterMarker = L.circleMarker(latlng, {
+                    radius: 4, fillColor: color, fillOpacity: 1, color: '#fff', weight: 2,
+                }).addTo(S.layers.draw);
+                actualizarIndicadorDibujo('Radio — Mueve mouse · Click confirmar');
+            } else {
+                const radius = d.radiusCenter.distanceTo(latlng);
+                if (d.temp) S.layers.draw.removeLayer(d.temp);
+                hideDistLabel();
+
+                const group = L.layerGroup().addTo(S.layers.draw);
+                L.circleMarker(d.radiusCenter, { radius: 3, fillColor: color, fillOpacity: 0.8, color: '#fff', weight: 1 }).addTo(group);
+                L.circle(d.radiusCenter, { radius, color, fillColor: color, fillOpacity: 0.08, weight: 2, dashArray: '6,3' }).addTo(group);
+                d.history.push(group);
+
+                if (d.radiusCenterMarker) { S.layers.draw.removeLayer(d.radiusCenterMarker); d.radiusCenterMarker = null; }
+                d.temp = null;
+                d.radiusCenter = null;
+                actualizarIndicadorDibujo('Radio — Click nuevo centro');
+            }
+        });
+
+        S.map.on('mousemove', (e) => {
+            if (d.mode !== 3 || !d.radiusCenter) return;
+            const radius = d.radiusCenter.distanceTo(e.latlng);
+            const color = DRAW_COLORS[3];
+            if (d.temp) S.layers.draw.removeLayer(d.temp);
+            d.temp = L.circle(d.radiusCenter, {
+                radius, color, fillColor: color, fillOpacity: 0.06, weight: 1.5, dashArray: '4,4',
+            }).addTo(S.layers.draw);
+            showDistLabel(fmtDist(radius));
+            actualizarIndicadorDibujo('Radio — ' + fmtDist(radius) + ' — Click confirmar');
+        });
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  13. PANEL: RENDER Y EVENT DELEGATION                         ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function cardHTML(p) {
+        const hora = p.fecha.match(/\d{2}:\d{2}/)?.[0] || p.fecha;
+        const idDisplay = p.id.length > 4 ? p.id.slice(0, -4) + '-' + p.id.slice(-4) : p.id;
+        return `
+            <div class="mi-card" data-id="${esc(p.id)}" style="border-left-color:${p.cat.color};background:${p.cat.color}1F">
+                <div class="mi-card-top">
+                    <span class="mi-card-tipo" style="color:${p.cat.color}">${p.cat.icon} ${esc(p.tipo)}</span>
+                    <span class="mi-card-est p">PENDIENTE</span>
+                </div>
+                <div class="mi-card-meta">
+                    <span>🕐 ${esc(hora)}</span>
+                    <span class="mi-card-id" data-action="copy" data-copy="${esc(p.id)}">ID: ${esc(idDisplay)}</span>
+                </div>
+                ${p.dir ? `<div class="mi-card-dir">📍 ${esc(p.dir)}</div>` : ''}
+                <div class="mi-card-btns">
+                    <button data-action="arcgis" data-dir="${esc(p.dir)}" data-pid="${esc(p.id)}">🗺️ ArcGIS</button>
+                    <button data-action="gmaps" data-dir="${esc(p.dir)}">📍 GMaps</button>
+                    <button data-action="ignore" data-id="${esc(p.id)}">✕ Ignorar</button>
+                </div>
+            </div>`;
+    }
+
+    function renderPanel() {
+        const container = S.ui.container;
+        if (!container) return;
+        const body = container.querySelector('#mi-panel-body');
+
+        const pendientes = S.procs.all.filter(p => p.estado === 'PENDIENTE' && !S.procs.ignored.has(p.id));
+        const ignorados = S.procs.all.filter(p => p.estado === 'PENDIENTE' && S.procs.ignored.has(p.id));
+
+        container.querySelector('#mi-proc-cnt').textContent = pendientes.length;
+        container.querySelector('#mi-cnt-p').textContent = pendientes.length;
+        container.querySelector('#mi-cnt-c').textContent = ignorados.length;
+
+        body.innerHTML = pendientes.length
+            ? pendientes.map(cardHTML).join('')
+            : '<div style="padding:30px;text-align:center;color:rgba(255,255,255,.2);font-size:11px">Sin pendientes activos</div>';
+    }
+
+    /** Event delegation: un solo listener para todo el panel */
+    function setupPanelDelegation(signal) {
+        const body = S.ui.container?.querySelector('#mi-panel-body');
+        if (!body) return;
+
+        body.addEventListener('click', (e) => {
+            const target = e.target;
+
+            // Acción por data-action
+            const actionEl = target.closest('[data-action]');
+            if (actionEl) {
+                const action = actionEl.dataset.action;
+
+                if (action === 'copy') {
+                    e.stopPropagation();
+                    const id = actionEl.dataset.copy;
+                    navigator.clipboard.writeText(id).then(() => {
+                        actionEl.classList.add('copied');
+                        const orig = actionEl.textContent;
+                        actionEl.textContent = '✓ Copiado';
+                        setTimeout(() => { actionEl.textContent = orig; actionEl.classList.remove('copied'); }, 1200);
+                    });
+                    return;
+                }
+
+                if (action === 'arcgis') {
+                    e.stopPropagation();
+                    abrirEnArcGIS(actionEl.dataset.dir, actionEl.dataset.pid);
+                    return;
+                }
+
+                if (action === 'gmaps') {
+                    e.stopPropagation();
+                    abrirEnGMaps(actionEl.dataset.dir);
+                    return;
+                }
+
+                if (action === 'ignore') {
+                    e.stopPropagation();
+                    const id = actionEl.dataset.id;
+                    S.procs.ignored.add(id);
+                    const entry = S.procs.markers.get(id);
+                    if (entry) {
+                        S.layers.proc.removeLayer(entry.marker);
+                        S.procs.markers.delete(id);
+                    }
+                    S.layers.nearby?.clearLayers();
+                    renderPanel();
+                    return;
+                }
+            }
+
+            // Click en card → centrar en mapa
+            const card = target.closest('.mi-card');
+            if (card) {
+                const entry = S.procs.markers.get(card.dataset.id);
+                if (entry) centrarEnProcedimiento(entry);
+            }
+        }, { signal });
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  14. NAVEGACIÓN EXTERNA                                       ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function abrirEnArcGIS(dir, procId) {
+        if (!dir) return;
+        const q = prepararDireccion(dir) + ', Las Condes';
+        const url = `${CONFIG.ARCGIS_VISOR_URL}&find=${encodeURIComponent(q)}`;
+        const w = S.windows;
+        if (w.arcgis && !w.arcgis.closed) {
+            w.arcgis.location.href = url;
+        } else {
+            w.arcgis = window.open(url, 'arcgis_visor');
+        }
+    }
+
+    function abrirEnGMaps(dir) {
+        if (!dir) return;
+        const q = prepararDireccion(dir) + ', Las Condes, Santiago, Chile';
+        const url = `https://www.google.com/maps/search/${encodeURIComponent(q)}`;
+        const w = S.windows;
+        if (w.gmaps && !w.gmaps.closed) {
+            w.gmaps.location.href = url;
+        } else {
+            w.gmaps = window.open(url, 'gmaps_visor');
+        }
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  15. MAPA: PROCEDIMIENTOS Y CÁMARAS                          ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function centrarEnProcedimiento(entry) {
+        const panelOpen = !document.querySelector('#mi-panel')?.classList.contains('collapsed');
+        const panelW = panelOpen ? 340 : 0;
+        const topbarH = 42;
+        const mapSize = S.map.getSize();
+        const centerX = (mapSize.x - panelW) / 2;
+        const centerY = topbarH + ((mapSize.y - topbarH) / 2);
+
+        S.map.setZoom(17, { animate: false });
+        setTimeout(() => {
+            const targetPoint = S.map.latLngToContainerPoint(entry.coords);
+            S.map.panBy([targetPoint.x - centerX, targetPoint.y - centerY], { animate: true, duration: 0.4 });
+            setTimeout(() => {
+                entry.marker.openPopup();
+                mostrarCamarasCercanas(entry.coords);
+            }, 450);
+        }, 100);
+    }
+
+    async function renderMapProcs() {
+        S.layers.proc.clearLayers();
+        S.procs.markers.clear();
+
+        const filtered = S.procs.all.filter(p => p.estado === 'PENDIENTE' && !S.procs.ignored.has(p.id));
+
+        for (const p of filtered) {
+            if (!p.dir) continue;
+            const coords = await geocodificarEnCola(p.dir);
+            if (!coords) continue;
+
+            const marker = L.circleMarker(coords, {
+                radius: 8,
+                fillColor: p.cat.color,
+                fillOpacity: 0.8,
+                color: '#fff',
+                weight: 2,
+            }).addTo(S.layers.proc);
+
+            marker.bindPopup(`
+                <div>
+                    <div class="mi-popup-tipo" style="color:${p.cat.color}">${p.cat.icon} ${esc(p.tipo)}</div>
+                    <div class="mi-popup-dir">📍 ${esc(p.dir)}</div>
+                    <div class="mi-popup-meta">
+                        ${esc(p.fecha)} · ID: ${esc(p.id)}<br>
+                        Estado: <strong style="color:#f87171">PENDIENTE</strong>
+                        ${p.desc ? `<br><em style="color:rgba(255,255,255,.3)">${esc(p.desc)}</em>` : ''}
+                    </div>
+                </div>
+            `);
+
+            marker.on('click', () => {
+                setTimeout(() => mostrarCamarasCercanas(coords), 100);
+            });
+
+            S.procs.markers.set(p.id, { marker, coords, proc: p });
+        }
+    }
+
+    function mostrarCamarasCercanas(coords, radioMetros = CONFIG.NEARBY_RADIUS) {
+        S.layers.nearby.clearLayers();
+        if (!S.cameras.data.length) return;
+
+        const cercanas = S.cameras.data
+            .map(cam => ({ ...cam, dist: haversine(coords[0], coords[1], cam.lat, cam.lng) }))
+            .filter(cam => cam.dist <= radioMetros)
+            .sort((a, b) => a.dist - b.dist);
+
+        if (!cercanas.length) return;
+
+        L.circle(coords, {
+            radius: radioMetros,
+            color: 'rgba(255,255,255,.15)',
+            fillColor: 'rgba(255,255,255,.03)',
+            weight: 1,
+            dashArray: '4,4',
+        }).addTo(S.layers.nearby);
+
+        cercanas.forEach(cam => {
+            const pg = cam.programa || 'R';
+            const color = PROG_COLOR[pg] || '#3b82f6';
+            const dist = Math.round(cam.dist);
+            const short = codigoCorto(cam);
+
+            const icon = L.divIcon({
+                className: '',
+                html: `<div style="width:10px;height:10px;background:${color};border:2px solid #fff;border-radius:1px;box-shadow:0 0 8px ${color};"></div>`,
+                iconSize: [10, 10],
+                iconAnchor: [5, 5],
+            });
+            L.marker([cam.lat, cam.lng], { icon, interactive: false }).addTo(S.layers.nearby);
+
+            const tooltip = L.tooltip({
+                permanent: true,
+                direction: 'top',
+                offset: [0, -8],
+                className: 'mi-nearby-label',
+            });
+            tooltip.setContent(`<span class="mi-nearby-square" style="background:${color}"></span><strong>${esc(short)}</strong> <span style="font-size:8px;color:rgba(255,255,255,.3)">${dist}m</span>`);
+
+            L.marker([cam.lat, cam.lng], {
+                icon: L.divIcon({ className: '', html: '', iconSize: [0, 0] }),
+            }).bindTooltip(tooltip).addTo(S.layers.nearby);
+        });
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  16. REFRESH ADAPTATIVO                                       ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function getRefreshSec() {
+        const pendientes = S.procs.all.filter(x => x.estado === 'PENDIENTE');
+        const p = pendientes.length;
+        if (p === 0) return CONFIG.REFRESH[0];
+
+        const hayCritico = pendientes.some(x => CONFIG.CRITICAS.includes(x.cat.id));
+        if (hayCritico) return CONFIG.REFRESH_CRITICO;
+
+        if (p <= 3) return CONFIG.REFRESH[3];
+        if (p <= 10) return CONFIG.REFRESH[10];
+        return CONFIG.REFRESH.max;
+    }
+
+    function startRefreshCycle() {
+        const r = S.refresh;
+        if (r.timer) clearInterval(r.timer);
+        r.countdown = getRefreshSec();
+
+        const cdEl = S.ui.container?.querySelector('#mi-countdown');
+        if (cdEl) cdEl.textContent = r.countdown;
+
+        r.timer = setInterval(() => {
+            r.countdown--;
+            if (cdEl) cdEl.textContent = Math.max(0, r.countdown);
+            if (r.countdown <= 0) {
+                refreshData().then(() => {
+                    // Limpiar ignorados que ya no son pendientes
+                    const pendIds = new Set(S.procs.all.filter(x => x.estado === 'PENDIENTE').map(x => x.id));
+                    for (const id of S.procs.ignored) {
+                        if (!pendIds.has(id)) S.procs.ignored.delete(id);
+                    }
+                    r.countdown = getRefreshSec();
+                });
+            }
+        }, 1000);
+    }
+
+    async function refreshData() {
+        const container = S.ui.container;
+        if (!container) return;
+
+        container.querySelector('#mi-spinner')?.classList.add('on');
         const { procs, live } = await fetchProcedimientos();
 
         const modeEl = container.querySelector('#mi-mode');
@@ -2806,610 +3214,293 @@
             modeEl.className = 'mi-badge demo';
         }
 
-        allProcs = procs;
-        renderPanel(container);
+        S.procs.all = procs;
+        renderPanel();
         await renderMapProcs();
-        container.querySelector('#mi-spinner').classList.remove('on');
-    }
-
-    function centrarEnProcedimiento(entry) {
-        const panelOpen = !document.querySelector('#mi-panel')?.classList.contains('collapsed');
-        const panelW = panelOpen ? 340 : 0;
-        const topbarH = 42;
-
-        // Calcular centro visible real (descontando panel y topbar)
-        const mapSize = map.getSize();
-        const visibleW = mapSize.x - panelW;
-        const visibleH = mapSize.y - topbarH;
-        const centerX = visibleW / 2;
-        const centerY = topbarH + (visibleH / 2);
-
-        // Convertir coords del procedimiento a pixel, calcular offset, y usar flyTo
-        map.setZoom(17, { animate: false });
-        setTimeout(() => {
-            const targetPoint = map.latLngToContainerPoint(entry.coords);
-            const offsetX = targetPoint.x - centerX;
-            const offsetY = targetPoint.y - centerY;
-            map.panBy([offsetX, offsetY], { animate: true, duration: 0.4 });
-            setTimeout(() => {
-                entry.marker.openPopup();
-                mostrarCamarasCercanas(entry.coords);
-            }, 450);
-        }, 100);
-    }
-
-    function renderPanel(container) {
-        const body = container.querySelector('#mi-panel-body');
-        const filtered = activeFilter === 'all'
-            ? allProcs
-            : allProcs.filter(p => p.cat.id === activeFilter);
-
-        const pend = filtered.filter(p => p.estado === 'PENDIENTE');
-        const cerr = filtered.filter(p => p.estado === 'CERRADO');
-
-        container.querySelector('#mi-proc-cnt').textContent = filtered.length;
-        container.querySelector('#mi-cnt-p').textContent = allProcs.filter(p => p.estado === 'PENDIENTE').length;
-        container.querySelector('#mi-cnt-c').textContent = allProcs.filter(p => p.estado === 'CERRADO').length;
-
-        let html = '';
-        if (pend.length) {
-            html += `<div class="mi-sec">🔴 Pendientes (${pend.length})</div>`;
-            html += pend.map(cardHTML).join('');
-        }
-        if (cerr.length) {
-            html += `<div class="mi-sec">🔵 Cerrados (${cerr.length})</div>`;
-            html += cerr.map(cardHTML).join('');
-        }
-        if (!filtered.length) {
-            html = '<div style="padding:30px;text-align:center;color:rgba(255,255,255,.25);font-size:11px">Sin procedimientos en última hora</div>';
-        }
-
-        body.innerHTML = html;
-
-        // Bind eventos
-        body.querySelectorAll('.mi-card').forEach(card => {
-            card.addEventListener('click', (e) => {
-                if (e.target.closest('button')) return;
-                const entry = procMarkers.get(card.dataset.id);
-                if (entry) {
-                    centrarEnProcedimiento(entry);
-                }
-            });
-        });
-        body.querySelectorAll('.mi-btn-arc').forEach(btn => {
-            btn.addEventListener('click', () => abrirEnArcGIS(btn.dataset.dir, btn.dataset.pid));
-        });
-        body.querySelectorAll('.mi-btn-gm').forEach(btn => {
-            btn.addEventListener('click', () => abrirEnGMaps(btn.dataset.dir));
-        });
-        // Copiar ID al clipboard
-        body.querySelectorAll('.mi-card-id').forEach(el => {
-            el.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const id = el.dataset.copy;
-                navigator.clipboard.writeText(id).then(() => {
-                    el.classList.add('copied');
-                    const orig = el.textContent;
-                    el.textContent = '✓ Copiado';
-                    setTimeout(() => { el.textContent = orig; el.classList.remove('copied'); }, 1200);
-                });
-            });
-        });
-    }
-
-    function cardHTML(p) {
-        const isPend = p.estado === 'PENDIENTE';
-        const hora = p.fecha.match(/\d{2}:\d{2}/)?.[0] || p.fecha;
-        const dirEsc = (p.dir || '').replace(/"/g, '&quot;');
-        const opac = isPend ? '.12' : '.06';
-        return `
-            <div class="mi-card" data-id="${p.id}" style="border-left-color:${p.cat.color};background:${p.cat.color}${isPend ? '1F' : '0F'}">
-                <div class="mi-card-top">
-                    <span class="mi-card-tipo" style="color:${p.cat.color}">${p.cat.icon} ${p.tipo}</span>
-                    <span class="mi-card-est ${isPend ? 'p' : 'c'}">${p.estado}</span>
-                </div>
-                <div class="mi-card-meta">
-                    <span>🕐 ${hora}</span>
-                    <span class="mi-card-id" title="Click para copiar" data-copy="${p.id}">ID: ${p.id.length > 4 ? p.id.slice(0,-4) + '-' + p.id.slice(-4) : p.id}</span>
-                </div>
-                ${p.dir ? `<div class="mi-card-dir">📍 ${p.dir}</div>` : ''}
-                <div class="mi-card-btns">
-                    <button class="mi-btn-arc" data-dir="${dirEsc}" data-pid="${p.id}">🗺️ ArcGIS</button>
-                    <button class="mi-btn-gm" data-dir="${dirEsc}">📍 GMaps</button>
-                </div>
-            </div>`;
-    }
-
-    async function renderMapProcs() {
-        procLayer.clearLayers();
-        procMarkers.clear();
-
-        const filtered = activeFilter === 'all'
-            ? allProcs
-            : allProcs.filter(p => p.cat.id === activeFilter);
-
-        for (const p of filtered) {
-            if (!p.dir) continue;
-            const coords = await geocodificarEnCola(p.dir);
-            if (!coords) continue;
-
-            const isPend = p.estado === 'PENDIENTE';
-            const marker = L.circleMarker(coords, {
-                radius: isPend ? 8 : 5,
-                fillColor: p.cat.color,
-                fillOpacity: isPend ? 0.8 : 0.35,
-                color: '#fff',
-                weight: isPend ? 2 : 1,
-            }).addTo(procLayer);
-
-            marker.bindPopup(`
-                <div>
-                    <div class="mi-popup-tipo" style="color:${p.cat.color}">${p.cat.icon} ${p.tipo}</div>
-                    <div class="mi-popup-dir">📍 ${p.dir}</div>
-                    <div class="mi-popup-meta">
-                        ${p.fecha} · ID: ${p.id}<br>
-                        Estado: <strong style="color:${isPend ? '#f87171' : '#60a5fa'}">${p.estado}</strong>
-                        ${p.desc ? `<br><em style="color:rgba(255,255,255,.3)">${p.desc}</em>` : ''}
-                    </div>
-                </div>
-            `);
-            marker.on('click', () => {
-                setTimeout(() => mostrarCamarasCercanas(coords), 100);
-            });
-
-            procMarkers.set(p.id, { marker, coords, proc: p });
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // SISTEMA DE DIBUJO (hotkeys 1-4)
-    // 1 = Marcador puntual, 2 = Línea/ruta, 3 = Polígono/zona, 4 = Círculo/radio
-    // ═══════════════════════════════════════════════════════════════
-
-    let drawMode = null;  // null | 1 | 2 | 3
-    let drawLayer = null;
-    let drawTemp = null;
-    let drawHistory = []; // Stack para undo — cada entry is a LayerGroup
-    let isDrawing = false; // Pencil: mouse held down
-    let isDragging = false; // Arrow: mouse held down
-    let dragStart = null;
-    let pencilPoints = []; // Current pencil stroke coords
-    let radiusCenter = null; // Radio center point + marker
-    let radiusCenterMarker = null;
-    let distLabel = null; // Floating distance label element
-    const DRAW_COLORS = { 1: '#fbbf24', 2: '#f472b6', 3: '#34d399' };
-    const DRAW_NAMES = { 1: 'Lápiz', 2: 'Flecha', 3: 'Radio' };
-
-    function activarHerramientaDibujo(tool) {
-        if (drawMode === tool) { desactivarDibujo(); return; } // Toggle off
-        desactivarDibujo(); // Limpiar anterior
-        drawMode = tool;
-        drawPoints = [];
-        if (!drawLayer) { drawLayer = L.layerGroup().addTo(map); }
-        map.getContainer().style.cursor = 'crosshair';
-        actualizarIndicadorDibujo();
-        console.log(`[MapaIntegrado] 🖊️ Dibujo: ${DRAW_NAMES[tool]} activado`);
-    }
-
-    function undoLastDraw() {
-        if (drawHistory.length === 0) return;
-        const last = drawHistory.pop();
-        if (drawLayer) drawLayer.removeLayer(last);
-    }
-
-    function desactivarDibujo() {
-        drawMode = null;
-        isDrawing = false;
-        isDragging = false;
-        dragStart = null;
-        pencilPoints = [];
-        if (radiusCenterMarker) { drawLayer?.removeLayer(radiusCenterMarker); radiusCenterMarker = null; }
-        radiusCenter = null;
-        if (drawTemp) { drawLayer?.removeLayer(drawTemp); drawTemp = null; }
-        hideDistLabel();
-        map.getContainer().style.cursor = '';
-        actualizarIndicadorDibujo();
-    }
-
-    function actualizarIndicadorDibujo(customMsg) {
-        let indicator = document.getElementById('mi-draw-indicator');
-        if (!indicator) {
-            indicator = document.createElement('div');
-            indicator.id = 'mi-draw-indicator';
-            indicator.style.cssText = 'position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:1001;background:rgba(15,17,23,.92);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:6px 14px;font:600 11px -apple-system,sans-serif;color:#fff;display:none;pointer-events:none;';
-            document.getElementById('mapa-integrado-root')?.appendChild(indicator);
-        }
-        if (drawMode) {
-            const color = DRAW_COLORS[drawMode];
-            if (customMsg) {
-                indicator.innerHTML = `<span style="color:${color}">● </span>${customMsg} · <span style="color:rgba(255,255,255,.4)">ESC cancelar</span>`;
-            } else {
-                indicator.innerHTML = `<span style="color:${color}">● ${DRAW_NAMES[drawMode]}</span> — Click en mapa · <span style="color:rgba(255,255,255,.4)">ESC cancelar</span>`;
-            }
-            indicator.style.display = 'block';
-        } else {
-            indicator.style.display = 'none';
-        }
-    }
-
-    // ── Floating label que sigue al mouse ──
-    function showDistLabel(text) {
-        if (!distLabel) {
-            distLabel = document.createElement('div');
-            distLabel.style.cssText = 'position:fixed;z-index:1002;background:rgba(0,0,0,.8);color:#fff;font:700 11px -apple-system,sans-serif;padding:2px 6px;border-radius:4px;pointer-events:none;display:none;';
-            document.getElementById('mapa-integrado-root')?.appendChild(distLabel);
-        }
-        distLabel.textContent = text;
-        distLabel.style.display = 'block';
-    }
-    function moveDistLabel(e) {
-        if (distLabel && distLabel.style.display !== 'none') {
-            distLabel.style.left = (e.clientX + 14) + 'px';
-            distLabel.style.top = (e.clientY - 10) + 'px';
-        }
-    }
-    function hideDistLabel() {
-        if (distLabel) distLabel.style.display = 'none';
-    }
-
-    // Handler de eventos para dibujo
-    function setupDrawHandlers() {
-        const mapEl = map.getContainer();
-
-        // Global mousemove para mover dist label
-        document.addEventListener('mousemove', moveDistLabel);
-
-        // ══════════════════════════════════
-        // TOOL 1: LÁPIZ (freehand como Paint)
-        // mousedown = empieza trazo, mousemove = dibuja, mouseup = termina
-        // ══════════════════════════════════
-
-        mapEl.addEventListener('mousedown', (e) => {
-            if (drawMode === 1 && e.button === 0) {
-                isDrawing = true;
-                pencilPoints = [];
-                const latlng = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                pencilPoints.push(latlng);
-                if (drawTemp) { drawLayer.removeLayer(drawTemp); drawTemp = null; }
-                const color = DRAW_COLORS[1];
-                drawTemp = L.polyline(pencilPoints, { color, weight: 3, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }).addTo(drawLayer);
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        }, true);
-
-        mapEl.addEventListener('mousemove', (e) => {
-            // Lápiz freehand
-            if (drawMode === 1 && isDrawing && drawTemp) {
-                const latlng = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                pencilPoints.push(latlng);
-                drawTemp.setLatLngs(pencilPoints);
-                e.preventDefault();
-            }
-
-            // Radio preview
-            if (drawMode === 3 && radiusCenter) {
-                const latlng = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                const radius = radiusCenter.distanceTo(latlng);
-                const color = DRAW_COLORS[3];
-                if (drawTemp) drawLayer.removeLayer(drawTemp);
-                drawTemp = L.circle(radiusCenter, {
-                    radius, color, fillColor: color, fillOpacity: 0.06, weight: 1.5, dashArray: '4,4',
-                }).addTo(drawLayer);
-                showDistLabel(formatDist(radius));
-                actualizarIndicadorDibujo(`Radio — ${formatDist(radius)} — Click confirmar`);
-            }
-
-            // Flecha preview
-            if (drawMode === 2 && isDragging && dragStart) {
-                const current = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                const dist = dragStart.distanceTo(current);
-                if (drawTemp) drawLayer.removeLayer(drawTemp);
-                drawTemp = crearFlecha(dragStart, current);
-                drawTemp.addTo(drawLayer);
-                showDistLabel(formatDist(dist));
-                actualizarIndicadorDibujo(`Flecha — ${formatDist(dist)}`);
-                e.preventDefault();
-            }
-        }, true);
-
-        mapEl.addEventListener('mouseup', (e) => {
-            // Lápiz: terminar trazo
-            if (drawMode === 1 && isDrawing) {
-                isDrawing = false;
-                if (drawTemp && pencilPoints.length > 2) {
-                    drawHistory.push(drawTemp);
-                    drawTemp = null;
-                } else if (drawTemp) {
-                    drawLayer.removeLayer(drawTemp);
-                    drawTemp = null;
-                }
-                pencilPoints = [];
-                return;
-            }
-
-            // Flecha: soltar
-            if (drawMode === 2 && isDragging && dragStart) {
-                isDragging = false;
-                hideDistLabel();
-                const end = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                const dist = dragStart.distanceTo(end);
-                if (dist < 10) {
-                    if (drawTemp) { drawLayer.removeLayer(drawTemp); drawTemp = null; }
-                } else {
-                    if (drawTemp) {
-                        drawHistory.push(drawTemp);
-                        drawTemp = null;
-                    }
-                }
-                dragStart = null;
-                actualizarIndicadorDibujo('Flecha — Arrastra inicio → fin');
-            }
-        }, true);
-
-        // ══════════════════════════════════
-        // TOOL 2: FLECHA (mousedown inicio)
-        // ══════════════════════════════════
-
-        mapEl.addEventListener('mousedown', (e) => {
-            if (drawMode === 2 && e.button === 0) {
-                isDragging = true;
-                dragStart = map.containerPointToLatLng([e.offsetX, e.offsetY]);
-                if (drawTemp) { drawLayer.removeLayer(drawTemp); drawTemp = null; }
-                e.preventDefault();
-                e.stopPropagation();
-            }
-        }, true);
-
-        // ══════════════════════════════════
-        // TOOL 3: RADIO (click centro, move preview, click confirma)
-        // ══════════════════════════════════
-
-        map.on('click', (e) => {
-            if (drawMode !== 3) return;
-            const latlng = e.latlng;
-            const color = DRAW_COLORS[3];
-
-            if (!radiusCenter) {
-                // Primer click: centro
-                radiusCenter = latlng;
-                radiusCenterMarker = L.circleMarker(latlng, {
-                    radius: 4, fillColor: color, fillOpacity: 1, color: '#fff', weight: 2
-                }).addTo(drawLayer);
-                actualizarIndicadorDibujo('Radio — Mueve mouse · Click confirmar');
-            } else {
-                // Segundo click: confirmar
-                const radius = radiusCenter.distanceTo(latlng);
-                if (drawTemp) drawLayer.removeLayer(drawTemp);
-                hideDistLabel();
-
-                // Crear grupo con centro + círculo
-                const group = L.layerGroup().addTo(drawLayer);
-                L.circleMarker(radiusCenter, { radius: 3, fillColor: color, fillOpacity: 0.8, color: '#fff', weight: 1 }).addTo(group);
-                L.circle(radiusCenter, {
-                    radius, color, fillColor: color, fillOpacity: 0.08, weight: 2, dashArray: '6,3',
-                }).addTo(group);
-                // Label de distancia en el borde
-                const bearing = Math.atan2(latlng.lng - radiusCenter.lng, latlng.lat - radiusCenter.lat);
-                const midLat = radiusCenter.lat + (latlng.lat - radiusCenter.lat) * 0.5;
-                const midLng = radiusCenter.lng + (latlng.lng - radiusCenter.lng) * 0.5;
-                L.marker([midLat, midLng], {
-                    icon: L.divIcon({
-                        className: '',
-                        html: `<div style="font:700 10px -apple-system,sans-serif;color:${color};text-shadow:0 0 4px rgba(0,0,0,.8);white-space:nowrap;transform:translate(-50%,-50%)">${formatDist(radius)}</div>`,
-                        iconSize: [0,0],
-                    }), interactive: false
-                }).addTo(group);
-                drawHistory.push(group);
-
-                // Limpiar el centro marker anterior (no está en el group)
-                if (radiusCenterMarker) {
-                    drawLayer.removeLayer(radiusCenterMarker);
-                    radiusCenterMarker = null;
-                }
-                drawTemp = null;
-                radiusCenter = null;
-                actualizarIndicadorDibujo('Radio — Click nuevo centro');
-            }
-        });
-    }
-
-    // ── Crear flecha con punta triangular sólida ──
-    function crearFlecha(from, to) {
-        const color = DRAW_COLORS[2];
-        const group = L.layerGroup();
-
-        // Línea principal (gruesa)
-        L.polyline([from, to], { color, weight: 4, opacity: 0.9, lineCap: 'round' }).addTo(group);
-
-        // Punta triangular usando pixel math para que siempre apunte bien
-        const fromPx = map.latLngToContainerPoint(from);
-        const toPx = map.latLngToContainerPoint(to);
-        const dx = toPx.x - fromPx.x;
-        const dy = toPx.y - fromPx.y;
-        const len = Math.sqrt(dx*dx + dy*dy);
-        if (len < 5) return group;
-
-        const ux = dx / len;
-        const uy = dy / len;
-        const headSize = Math.min(20, len * 0.3); // Proporcional pero max 20px
-
-        // Dos puntos del triángulo (perpendicular)
-        const p1x = toPx.x - ux * headSize - uy * headSize * 0.5;
-        const p1y = toPx.y - uy * headSize + ux * headSize * 0.5;
-        const p2x = toPx.x - ux * headSize + uy * headSize * 0.5;
-        const p2y = toPx.y - uy * headSize - ux * headSize * 0.5;
-
-        const tip = map.containerPointToLatLng([toPx.x, toPx.y]);
-        const left = map.containerPointToLatLng([p1x, p1y]);
-        const right = map.containerPointToLatLng([p2x, p2y]);
-
-        L.polygon([tip, left, right], {
-            color, fillColor: color, fillOpacity: 0.9, weight: 0,
-        }).addTo(group);
-
-        return group;
-    }
-
-    function formatDist(m) {
-        return m > 1000 ? (m/1000).toFixed(1) + 'km' : Math.round(m) + 'm';
-    }
-
-    // ── Cámaras cercanas a un procedimiento ──
-    function mostrarCamarasCercanas(coords, radioMetros = 250) {
-        nearbyLayer.clearLayers();
-        if (!allCamarasData.length) return;
-
-        const progColor = { B: '#ef4444', R: '#3b82f6', P: '#22c55e', F: '#a855f7' };
-        const progNombre = { B: 'BP', R: 'RM', P: 'PI', F: 'RI' };
-
-        // Calcular distancia Haversine
-        function distancia(lat1, lon1, lat2, lon2) {
-            const R = 6371000;
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2)**2;
-            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        }
-
-        // Buscar cámaras dentro del radio
-        const cercanas = allCamarasData
-            .map(cam => ({ ...cam, dist: distancia(coords[0], coords[1], cam.lat, cam.lng) }))
-            .filter(cam => cam.dist <= radioMetros)
-            .sort((a, b) => a.dist - b.dist);
-
-        if (!cercanas.length) return;
-
-        // Dibujar círculo de radio
-        L.circle(coords, {
-            radius: radioMetros,
-            color: 'rgba(255,255,255,.15)',
-            fillColor: 'rgba(255,255,255,.03)',
-            weight: 1,
-            dashArray: '4,4',
-        }).addTo(nearbyLayer);
-
-        // Mostrar labels con código corto de cada cámara cercana
-        cercanas.forEach(cam => {
-            const pg = cam.programa || 'R';
-            const color = progColor[pg] || '#3b82f6';
-            const dist = Math.round(cam.dist);
-            const short = codigoCorto(cam);
-
-            // Highlight square (larger, glowing)
-            const icon = L.divIcon({
-                className: '',
-                html: `<div style="width:10px;height:10px;background:${color};border:2px solid #fff;border-radius:1px;box-shadow:0 0 8px ${color};"></div>`,
-                iconSize: [10, 10],
-                iconAnchor: [5, 5],
-            });
-            L.marker([cam.lat, cam.lng], { icon, interactive: false }).addTo(nearbyLayer);
-
-            // Code label tooltip
-            const tooltip = L.tooltip({
-                permanent: true,
-                direction: 'top',
-                offset: [0, -8],
-                className: 'mi-nearby-label',
-            });
-            tooltip.setContent(`<span class="mi-nearby-square" style="background:${color}"></span><strong>${short}</strong> <span style="font-size:8px;color:rgba(255,255,255,.3)">${dist}m</span>`);
-
-            L.marker([cam.lat, cam.lng], {
-                icon: L.divIcon({ className: '', html: '', iconSize: [0,0] }),
-            }).bindTooltip(tooltip).addTo(nearbyLayer);
-        });
-
-        // Nearby labels persist until next proc selection
-    }
-
-    // ── Navegación externa ──
-    function abrirEnArcGIS(dir, procId) {
-        if (!dir) return;
-        const q = prepararDireccion(dir) + ', Las Condes';
-        const url = `${CONFIG.ARCGIS_VISOR_URL}&find=${encodeURIComponent(q)}`;
-        if (arcgisWindow && !arcgisWindow.closed) {
-            arcgisWindow.location.href = url;
-        } else {
-            arcgisWindow = window.open(url, 'arcgis_visor');
-        }
-    }
-
-    function abrirEnGMaps(dir) {
-        if (!dir) return;
-        const q = prepararDireccion(dir) + ', Las Condes, Santiago, Chile';
-        const url = `https://www.google.com/maps/search/${encodeURIComponent(q)}`;
-        if (gmapsWindow && !gmapsWindow.closed) {
-            gmapsWindow.location.href = url;
-        } else {
-            gmapsWindow = window.open(url, 'gmaps_visor');
-        }
-    }
-
-    // ── Refresh ──
-    function getRefreshSec() {
-        const pendientes = allProcs.filter(x => x.estado === 'PENDIENTE');
-        const p = pendientes.length;
-        if (p === 0) return CONFIG.REFRESH[0];
-
-        // Si hay pendientes críticos (robos, sospechosos) → siempre 5s
-        const hayCritico = pendientes.some(x => CONFIG.CRITICAS.includes(x.cat.id));
-        if (hayCritico) return CONFIG.REFRESH_CRITICO;
-
-        if (p <= 3) return CONFIG.REFRESH[3];
-        if (p <= 10) return CONFIG.REFRESH[10];
-        return CONFIG.REFRESH.max;
-    }
-
-    function startRefreshCycle(container) {
-        if (refreshTimer) clearInterval(refreshTimer);
-        countdownVal = getRefreshSec();
-        const cdEl = container.querySelector('#mi-countdown');
-        cdEl.textContent = countdownVal;
-
-        refreshTimer = setInterval(() => {
-            countdownVal--;
-            cdEl.textContent = Math.max(0, countdownVal);
-            if (countdownVal <= 0) {
-                refreshData(container).then(() => {
-                    countdownVal = getRefreshSec();
-                });
-            }
-        }, 1000);
+        container.querySelector('#mi-spinner')?.classList.remove('on');
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  NAVEGACIÓN (hash-based)                                      ║
+    // ║  17. APP CONTROLLER: INIT Y CLEANUP                           ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    async function iniciarMapa(container) {
+        try {
+            await cargarLeaflet();
+        } catch (e) {
+            console.error('[MapaIntegrado] Leaflet failed:', e);
+            container.querySelector('#mi-mode').textContent = '⚠ Error cargando mapa';
+            container.querySelector('#mi-mode').className = 'mi-badge demo';
+            return;
+        }
+        if (!window.L) {
+            container.querySelector('#mi-mode').textContent = '⚠ Leaflet no disponible';
+            container.querySelector('#mi-mode').className = 'mi-badge demo';
+            return;
+        }
+
+        // AbortController para cleanup limpio de todos los listeners
+        S.abortController = new AbortController();
+        const signal = S.abortController.signal;
+
+        // ── Mapa ──
+        S.map = L.map('mi-map', {
+            center: CONFIG.CENTER,
+            zoom: CONFIG.ZOOM,
+            zoomControl: false,
+            attributionControl: false,
+            keyboard: false,
+        });
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+        }).addTo(S.map);
+
+        L.control.zoom({ position: 'topleft' }).addTo(S.map);
+        S.map.doubleClickZoom.disable();
+
+        S.layers.proc = L.layerGroup().addTo(S.map);
+        S.layers.cam = L.layerGroup().addTo(S.map);
+        S.layers.nearby = L.layerGroup().addTo(S.map);
+        S.layers.draw = L.layerGroup().addTo(S.map);
+
+        // ── Cámaras ──
+        S.cameras.data = await fetchCamaras();
+        S.cameras.loaded = true;
+
+        S.cameras.data.forEach(cam => {
+            const pg = cam.programa || 'R';
+            const color = PROG_COLOR[pg] || '#3b82f6';
+            const border = PROG_BORDER[pg] || '#1d4ed8';
+            const short = codigoCorto(cam);
+
+            const size = 11;
+            const icon = L.divIcon({
+                className: '',
+                html: `<div style="width:${size}px;height:${size}px;background:${color};border:1.5px solid ${border};opacity:0.75;border-radius:1px;cursor:pointer;transition:transform .1s;"></div>`,
+                iconSize: [size, size],
+                iconAnchor: [size / 2, size / 2],
+            });
+
+            const marker = L.marker([cam.lat, cam.lng], { icon }).addTo(S.layers.cam);
+
+            // Popup con event delegation seguro (sin inline onclick)
+            const popupDiv = document.createElement('div');
+            popupDiv.style.cssText = 'text-align:center;min-width:50px';
+
+            const codeEl = document.createElement('div');
+            codeEl.style.cssText = `font:700 13px -apple-system,sans-serif;color:${color};cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.2);padding-bottom:2px`;
+            codeEl.textContent = short;
+            codeEl.addEventListener('click', () => {
+                navigator.clipboard.writeText(short).then(() => {
+                    codeEl.style.color = '#34d399';
+                    codeEl.textContent = '✓';
+                    setTimeout(() => { codeEl.style.color = color; codeEl.textContent = short; }, 800);
+                });
+            });
+            popupDiv.appendChild(codeEl);
+
+            if (cam.dir) {
+                const dirEl = document.createElement('div');
+                dirEl.style.cssText = 'font-size:9px;color:rgba(255,255,255,.35);margin-top:2px';
+                dirEl.textContent = cam.dir;
+                popupDiv.appendChild(dirEl);
+            }
+
+            marker.bindPopup(popupDiv, { closeButton: false, className: 'mi-cam-popup' });
+        });
+
+        // ── Dibujo ──
+        setupDrawHandlers(signal);
+
+        // ── Eventos UI ──
+        container.querySelector('#mi-back').addEventListener('click', salir, { signal });
+        container.querySelector('#mi-panel-toggle').addEventListener('click', () => {
+            const panel = container.querySelector('#mi-panel');
+            panel.classList.toggle('collapsed');
+            container.querySelector('#mi-panel-toggle').textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+        }, { signal });
+
+        // ── Panel delegation ──
+        setupPanelDelegation(signal);
+
+        // ── Reloj (trackeado para cleanup) ──
+        S.ui.clockTimer = setInterval(() => {
+            const el = container.querySelector('#mi-clock');
+            if (el) el.textContent = new Date().toLocaleTimeString('es-CL', { hour12: false });
+        }, 1000);
+
+        // ── WASD navegación ──
+        setupWASD(signal);
+
+        // ── Keyboard shortcuts ──
+        setupKeyboard(signal);
+
+        // ── Primera carga ──
+        await refreshData();
+        startRefreshCycle();
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  18. TECLADO Y WASD                                           ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function setupWASD(signal) {
+        const w = S.wasd;
+
+        function tick() {
+            let dx = 0, dy = 0;
+            if (w.keys.has('a') || w.keys.has('arrowleft'))  dx -= CONFIG.PAN_PX;
+            if (w.keys.has('d') || w.keys.has('arrowright')) dx += CONFIG.PAN_PX;
+            if (w.keys.has('w') || w.keys.has('arrowup'))    dy -= CONFIG.PAN_PX;
+            if (w.keys.has('s') || w.keys.has('arrowdown'))  dy += CONFIG.PAN_PX;
+            if (dx !== 0 || dy !== 0) S.map.panBy([dx, dy], { animate: true, duration: 0.15 });
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (!document.getElementById('mapa-integrado-root')) return;
+
+            const key = e.key.toLowerCase();
+            if (!['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) return;
+
+            e.preventDefault();
+            if (!w.keys.has(key)) {
+                w.keys.add(key);
+                if (!w.interval) {
+                    tick();
+                    w.interval = setInterval(tick, CONFIG.PAN_INTERVAL);
+                }
+            }
+        }, { signal });
+
+        document.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            w.keys.delete(key);
+            if (w.keys.size === 0 && w.interval) {
+                clearInterval(w.interval);
+                w.interval = null;
+            }
+        }, { signal });
+    }
+
+    function setupKeyboard(signal) {
+        document.addEventListener('keydown', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (!document.getElementById('mapa-integrado-root')) return;
+
+            const key = e.key.toLowerCase();
+
+            // Ctrl+Z = undo
+            if ((e.ctrlKey || e.metaKey) && key === 'z') {
+                e.preventDefault();
+                undoLastDraw();
+                return;
+            }
+
+            // Zoom
+            if (key === '+' || key === '=') { e.preventDefault(); S.map.zoomIn(); return; }
+            if (key === '-') { e.preventDefault(); S.map.zoomOut(); return; }
+
+            // Herramientas de dibujo
+            if (['1', '2', '3'].includes(key)) {
+                e.preventDefault();
+                activarHerramientaDibujo(parseInt(key));
+                return;
+            }
+
+            // Undo con pipe/backslash
+            if (key === '\\' || key === '|' || e.code === 'Backslash') {
+                e.preventDefault();
+                undoLastDraw();
+                return;
+            }
+
+            // Borrar todo
+            if (key === '0' || key === 'delete') {
+                e.preventDefault();
+                if (S.layers.draw) S.layers.draw.clearLayers();
+                S.draw.history = [];
+                S.draw.radiusCenterMarker = null;
+                S.draw.radiusCenter = null;
+                desactivarDibujo();
+                return;
+            }
+
+            // Escape
+            if (key === 'escape') {
+                e.preventDefault();
+                if (S.draw.mode) {
+                    desactivarDibujo();
+                } else {
+                    S.map.closePopup();
+                    S.layers.nearby?.clearLayers();
+                }
+                return;
+            }
+        }, { signal });
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  19. LIFECYCLE: ACTIVAR / SALIR                               ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
     function activar() {
-        if (document.getElementById('mapa-integrado-root')) return; // ya activo
+        if (document.getElementById('mapa-integrado-root')) return;
         console.log('[MapaIntegrado] ▶ Activando');
         const container = construirUI();
         iniciarMapa(container);
     }
 
     function salir() {
+        // 1. Abortar todos los event listeners de una vez
+        if (S.abortController) {
+            S.abortController.abort();
+            S.abortController = null;
+        }
+
+        // 2. Limpiar timers
+        if (S.refresh.timer) { clearInterval(S.refresh.timer); S.refresh.timer = null; }
+        if (S.ui.clockTimer) { clearInterval(S.ui.clockTimer); S.ui.clockTimer = null; }
+        if (S.wasd.interval) { clearInterval(S.wasd.interval); S.wasd.interval = null; }
+        S.wasd.keys.clear();
+
+        // 3. Remover UI
         const root = document.getElementById('mapa-integrado-root');
         if (root) root.remove();
-        if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
 
-        // Restaurar contenido original
+        // 4. Restaurar contenido original
         const wrapper = document.getElementById('page-wrapper');
         if (wrapper) wrapper.style.display = '';
         const sidebar = document.querySelector('.navbar-default.navbar-static-side');
         if (sidebar) sidebar.style.display = '';
 
-        // Limpiar referencia
-        if (map) { map.remove(); map = null; }
-        nearbyLayer = null; allCamarasData = [];
-        procLayer = null; camLayer = null;
-        allProcs = []; procMarkers.clear();
+        // 5. Limpiar mapa y estado
+        if (S.map) { S.map.remove(); S.map = null; }
+        S.layers = { proc: null, cam: null, nearby: null, draw: null };
+        S.cameras.data = [];
+        S.cameras.loaded = false;
+        S.procs.all = [];
+        S.procs.markers.clear();
+        // No limpiar procs.ignored — persiste entre activaciones
+        S.refresh.countdown = 0;
+        S.ui.container = null;
 
-        // Quitar hash sin recargar
+        // 6. Limpiar estado de dibujo
+        S.draw = {
+            mode: null, isDrawing: false, isDragging: false,
+            dragStart: null, pencilPoints: [], radiusCenter: null,
+            radiusCenterMarker: null, distLabel: null, temp: null, history: [],
+        };
+
+        // 7. Hash sin recargar
         history.pushState(null, '', window.location.pathname + window.location.search);
     }
 
-    // ── Inyectar botón de acceso ──
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  20. INIT: INYECCIÓN Y DETECCIÓN DE HASH                      ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
     function inyectarBoton() {
         const navbar = document.querySelector('.navbar-top-links.navbar-right');
         if (!navbar || document.getElementById('mi-launch-btn')) return;
@@ -3426,19 +3517,14 @@
         navbar.insertBefore(li, navbar.firstChild);
     }
 
-    // ── Detección de hash ──
     function checkHash() {
-        if (window.location.hash === CONFIG.HASH) {
-            activar();
-        }
+        if (window.location.hash === CONFIG.HASH) activar();
     }
 
     window.addEventListener('hashchange', checkHash);
-
-    // ── Init ──
     inyectarBoton();
     checkHash();
 
-    console.log('[MapaIntegrado] ✅ Script cargado. Usa #mapa-integrado para activar.');
+    console.log('[MapaIntegrado] ✅ v3.0 cargado. Usa #mapa-integrado para activar.');
 
 })();
