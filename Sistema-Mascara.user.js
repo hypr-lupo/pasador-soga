@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema - Mascara
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Máscara: Coloreo + Panel Última Hora + ArcGIS + Google Maps. Modular, optimizado, extensible.
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -1496,8 +1496,10 @@
 
         const esMapPage = location.pathname.startsWith('/incident_maps');
 
-        // Coloreo + Watcher + Panel solo en /incidents
+        // Coloreo + Watcher + Panel solo en /incidents (sin #mapa-integrado)
         if (!esMapPage) {
+            const esMapaIntegrado = location.hash === '#mapa-integrado';
+
             const esperarTabla = setInterval(() => {
                 if (document.querySelector('table tbody')) {
                     clearInterval(esperarTabla);
@@ -1508,8 +1510,12 @@
             }, 500);
             setTimeout(() => clearInterval(esperarTabla), 15000);
 
-            Panel.init();
-            console.log('✅ Panel Última Hora activo');
+            if (!esMapaIntegrado) {
+                Panel.init();
+                console.log('✅ Panel Última Hora activo');
+            } else {
+                console.log('ℹ️ #mapa-integrado detectado — Panel Última Hora desactivado');
+            }
         }
 
         // MapPanel solo en /incident_maps
