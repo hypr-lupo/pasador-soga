@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema Mapa Integrado
 // @namespace    http://tampermonkey.net/
-// @version      3.8
+// @version      3.9
 // @description  Mapa Leaflet integrado con procedimientos en vivo y panel Última Hora. Accesible via #mapa-integrado
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -3018,6 +3018,8 @@
             ? `<div class="mi-card-dir">${dirIcon} ${esc(p.dir)}</div>`
             : `<div class="mi-card-dir" style="color:rgba(251,191,36,.5)">⚠ Sin dirección</div>`;
         const descLine = p.desc ? `<div class="mi-card-desc" title="${esc(p.desc)}">${esc(p.desc)}</div>` : '';
+        const idDisplay = p.id.length > 4 ? p.id.slice(0, -4) + ' ' + p.id.slice(-4) : p.id;
+        const detailUrl = p.internalId ? `/incidents/${p.internalId}` : '';
         return `
             <div class="mi-card${isPendiente ? '' : ' closed'}${isPinned ? ' pinned' : ''}" data-id="${esc(p.id)}" style="border-left-color:${isPendiente ? p.cat.border : 'transparent'};background:${p.cat.color}">
                 <div class="mi-card-top">
@@ -3028,13 +3030,14 @@
                 </div>
                 <div class="mi-card-info">
                     <span class="mi-card-hora">🕐 ${esc(hora)}</span>
-                    <span class="mi-card-id" data-action="copy" data-copy="${esc(p.id)}">${esc(p.id)}</span>
+                    <span class="mi-card-id" data-action="copy" data-copy="${esc(p.id)}">${esc(idDisplay)}</span>
                 </div>
                 ${dirLine}
                 ${descLine}
                 <div class="mi-card-btns">
                     <button data-action="locate" data-id="${esc(p.id)}">🎯 Reubicar</button>
                     <button data-action="pin" data-id="${esc(p.id)}" title="${isPinned ? 'Desfijar' : 'Fijar'}">${isPinned ? '📌 Desfijar' : '📍 Fijar'}</button>
+                    ${detailUrl ? `<button data-action="detail" data-url="${esc(detailUrl)}">ℹ️</button>` : ''}
                     <button data-action="arcgis" data-dir="${esc(p.dir)}" data-pid="${esc(p.id)}">🗺️</button>
                     <button data-action="gmaps" data-dir="${esc(p.dir)}">📍</button>
                     <button data-action="ignore" data-id="${esc(p.id)}">✕</button>
@@ -3146,6 +3149,12 @@
                 if (action === 'gmaps') {
                     e.stopPropagation();
                     abrirEnGMaps(actionEl.dataset.dir);
+                    return;
+                }
+
+                if (action === 'detail') {
+                    e.stopPropagation();
+                    window.open(actionEl.dataset.url, '_blank');
                     return;
                 }
 
