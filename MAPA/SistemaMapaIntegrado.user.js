@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema Mapa Integrado
 // @namespace    http://tampermonkey.net/
-// @version      3.2
+// @version      3.8
 // @description  Mapa Leaflet integrado con procedimientos en vivo y panel Última Hora. Accesible via #mapa-integrado
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -36,11 +36,11 @@
         CRITICAS: ['homicidio', 'robo_hurto', 'incendio_gas', 'violencia'],
         REFRESH_CRITICO: 5,
         VENTANA_MIN: 60,
-        // Nominatim throttle (ms)
-        GEO_THROTTLE: 1100,
-        // Retry config
-        FETCH_MAX_RETRIES: 2,
-        FETCH_RETRY_DELAY: 2000,
+        // Paginación de scraping
+        MAX_PAGINAS: 15,
+        DELAY_ENTRE_PAGINAS: 400,
+        // URL del mapa de incidentes (fuente de coordenadas)
+        INCIDENT_MAP_URL: '/incident_maps',
         // Leaflet CDN (fallback si @require/@resource fallan)
         LEAFLET_CSS: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
         LEAFLET_JS: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js',
@@ -49,7 +49,7 @@
         PAN_INTERVAL: 120,
         NEARBY_RADIUS: 250,
         // Bounds de Las Condes
-        BOUNDS: { latMin: -33.44, latMax: -33.36, lonMin: -70.62, lonMax: -70.49 },
+        BOUNDS: { latMin: -33.50, latMax: -33.34, lonMin: -70.65, lonMax: -70.47 },
     };
 
     // ╔═══════════════════════════════════════════════════════════════╗
@@ -61,7 +61,7 @@
         map: null,
         layers: { proc: null, cam: null, nearby: null, draw: null },
         // Procedimientos
-        procs: { all: [], markers: new Map(), ignored: new Set() },
+        procs: { all: [], markers: new Map(), ignored: new Set(), pinned: new Set(), pinnedData: new Map(), manualCoords: new Map(), serverCoords: new Map() },
         // Cámaras
         cameras: { data: [], loaded: false },
         // Refresh
@@ -83,6 +83,8 @@
         },
         // Ventanas externas
         windows: { arcgis: null, gmaps: null },
+        // Ubicación manual
+        placement: { active: false, procId: null },
         // UI
         ui: { container: null, clockTimer: null },
         // Filtro
@@ -129,29 +131,13 @@
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
     /**
-     * Prepara dirección para geocoding (Nominatim).
-     * Formatos de entrada del portal:
-     *   "PATAGONIA, 29"              → "PATAGONIA 29"
-     *   "LOS POZOS (CUARTO CENTENARIO)" → "LOS POZOS y CUARTO CENTENARIO"
-     *   "KENNEDY. BRASILIA"          → "KENNEDY y BRASILIA"
-     *   "PLAZA, 2204"               → "PLAZA 2204"
-     *   "LPR 123 APOQUINDO"         → "APOQUINDO"
+     * Dirección para ArcGIS: limpia ruido, normaliza separadores.
      */
     function prepararDireccion(dir) {
         return dir
-            // LPR codes: "LPR 123" o "LPR123" al inicio o medio
             .replace(/LPR\s*\d+\s*/gi, '')
-            // Paréntesis = esquina: "(JORGE VI)" → "y JORGE VI"
-            .replace(/\(\s*([^)]+?)\s*\)/g, 'y $1')
-            // Punto seguido de espacio = intersección: ". " → " y "
-            .replace(/\.\s+/g, ' y ')
-            // Coma antes de número = numeración: ", 29" → " 29"
+            .replace(/\(\s*([^)]+?)\s*\)/g, '$1')
             .replace(/,\s*(\d+)\s*$/, ' $1')
-            // Coma sola (separador genérico) → espacio
-            .replace(/,\s*/g, ' ')
-            // Slash entre calles = intersección: "/" → " y "
-            .replace(/\s*\/\s*/g, ' y ')
-            // Limpiar espacios
             .replace(/\s+/g, ' ')
             .trim();
     }
@@ -174,39 +160,43 @@
     // ║  4. CATEGORÍAS                                                ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
-    // Categorías sincronizadas con Sistema Máscara.
+    // Categorías sincronizadas con Sistema Máscara v3.2.
     // color = fondo rgba para UI, border = acento sólido para bordes/marcadores
     // Orden importa: primera coincidencia gana.
     const CATEGORIAS = [
-        { id: 'homicidio', nombre: 'Homicidio', color: 'rgba(153,27,27,.25)', border: '#991b1b',
+        { id: 'homicidio', nombre: '☠️ Homicidio', color: 'rgba(153,27,27,.25)', border: '#991b1b',
           keywords: ['homicidio'] },
-        { id: 'incendio_gas', nombre: 'Incendio / Gas / Explosivos', color: 'rgba(220,38,38,.2)', border: '#dc2626',
+        { id: 'incendio_gas', nombre: '🔥 Incendio / Gas / Explosivos', color: 'rgba(220,38,38,.2)', border: '#dc2626',
           keywords: ['incendio con lesionados','incendio sin lesionados','incendio forestal','quema de pastizales','amago de incendio','humo visible','humos visibles','artefacto explosivo','escape de gas','emergencias de gas','derrame de liquidos','elementos tóxicos'] },
-        { id: 'robo_hurto', nombre: 'Robos / Hurtos / Estafas', color: 'rgba(234,88,12,.2)', border: '#ea580c',
-          keywords: ['robo','hurtos','asalto','portonazo','encerrona','intimidación','sustracción','estafa','defraudaciones','microtráfico','llamada telefónica tipo estafa'] },
-        { id: 'violencia', nombre: 'Violencia / Agresión', color: 'rgba(249,115,22,.2)', border: '#f97316',
-          keywords: ['agresión','acoso','actos deshonestos','disparos','riña','violencia intrafamiliar','desorden, huelga','huelga y/o manifestación','desorden','desalojo','pendencia','ruidos molestos'] },
-        { id: 'detenidos', nombre: 'Detenidos', color: 'rgba(217,119,6,.18)', border: '#d97706',
+        { id: 'robo_hurto', nombre: '💰 Robos / Hurtos / Estafas', color: 'rgba(234,88,12,.2)', border: '#ea580c',
+          keywords: ['hurtos','estafa','defraudaciones','microtráfico','llamada telefónica tipo estafa','robo a transeúnte'] },
+        { id: 'violencia', nombre: '👊 Violencia / Agresión', color: 'rgba(249,115,22,.2)', border: '#f97316',
+          keywords: ['agresión','acoso','actos deshonestos','disparos','riña','violencia intrafamiliar','desorden, huelga','huelga y/o manifestación','desorden','desalojo'] },
+        { id: 'detenidos', nombre: '🚔 Detenidos', color: 'rgba(217,119,6,.18)', border: '#d97706',
           keywords: ['detenidos por carabineros','detenidos por civiles','detenidos por funcionarios municipales','detenidos por funcionarios policiales','detenidos por pdi'] },
-        { id: 'accidente', nombre: 'Accidentes de Tránsito', color: 'rgba(234,179,8,.2)', border: '#eab308',
-          keywords: ['accidentes de tránsito','colisión','choque con lesionados','choque sin lesionados','atropello','caida en vehículo','volcamiento'] },
-        { id: 'salud', nombre: 'Salud / Lesionados', color: 'rgba(20,184,166,.18)', border: '#14b8a6',
-          keywords: ['enfermo en interior','enfermo en vía','enfermos','lesionado en interior','lesionado en vía','lesionados','muerte natural','parturienta','persona desmayada','rcp','suicidio','salud','oxígeno','paramédico'] },
-        { id: 'transito', nombre: 'Tránsito / Estacionamiento', color: 'rgba(234,179,8,.12)', border: '#ca8a04',
-          keywords: ['vehículo mal estacionado','vehículo abandonado','semáforo en mal estado','señalética','corte de tránsito','paso nivel','sumidero','tapa cámara','poste chocado'] },
-        { id: 'preventivo', nombre: 'Seguridad Preventiva', color: 'rgba(139,92,246,.18)', border: '#8b5cf6',
-          keywords: ['alerta analítica','alerta de aforo','alerta de merodeo','auto protegido','casa protegida ingresa','casa protegida','fono vacaciones ingresa','fono vacaciones','domicilio con puertas abiertas','domicilio marcado','marcas sospechosas','detección de vehículo con sistema lector','hallazgo de vehículo con encargo','encargo de vehículo','especies abandonadas','vigilancia especial','sospechoso en vía pública','sospechoso','merodeo','detección de vehículo','hallazgo','lector ppu'] },
-        { id: 'administrativo', nombre: 'Administrativo / Consultas', color: 'rgba(148,163,184,.12)', border: '#94a3b8',
-          keywords: ['inscripcion o consulta casa protegida','agradecimientos','felicitaciones','ayuda al vecino','consulta interna','consultas en general','contigencia fv','corte de llamada','en creación','encuestas','internos','llamada falsa','otros no clasificados','otros','aseo en espacio público','repetición de servicio'] },
-        { id: 'infraestructura', nombre: 'Infraestructura / Daños', color: 'rgba(161,98,7,.18)', border: '#a16207',
-          keywords: ['cables cortados','baja altura','desnivel en acera','desnivel en calzada','hoyo o hundimiento','luminaria en mal estado','desganche','árbol derribado','graffiti','daños a mobiliario público','daños a móviles municipales','daños a vehículo o propiedad','escombros en espacio','matriz rota','pabellón patrio','reja de plaza'] },
-        { id: 'servicios_basicos', nombre: 'Servicios Básicos / Agua', color: 'rgba(59,130,246,.18)', border: '#3b82f6',
+        { id: 'accidente', nombre: '🚗 Accidentes de Tránsito', color: 'rgba(234,179,8,.2)', border: '#eab308',
+          keywords: ['accidentes de tránsito','colisión','choque con lesionados','choque sin lesionados','atropello','caida en vehículo','vehículo en panne','solicitud de grúa'] },
+        { id: 'salud', nombre: '🏥 Salud / Lesionados', color: 'rgba(20,184,166,.18)', border: '#14b8a6',
+          keywords: ['enfermo en interior','enfermo en vía','enfermos','lesionado en interior','lesionado en vía','lesionados','muerte natural','parturienta','oxígeno dependiente','ebrio en via'] },
+        { id: 'alarmas', nombre: '🚨 Alarmas / Pánico', color: 'rgba(219,39,119,.15)', border: '#db2777',
+          keywords: ['alarma activada','alarma domicilio casa protegida','alarma pat','alarma domicilio fono vacaciones','alarmas domiciliarias','botón sos','botón de pánico'] },
+        { id: 'ruidos', nombre: '🔊 Ruidos Molestos', color: 'rgba(8,145,178,.18)', border: '#0891b2',
+          keywords: ['ruidos molestos'] },
+        { id: 'novedades', nombre: '📋 Novedades / Reportes', color: 'rgba(107,114,128,.15)', border: '#6b7280',
+          keywords: ['novedades central','novedades climáticas','novedades cámaras','novedades domicilio casa protegida','novedades domicilio fono vacaciones','novedades globos','novedades instalaciones','novedades permisos','novedades propaganda','novedades servicio carabineros','mal tiempo novedades','reporte destacamentos','reporte servicio especial','reporte servicio patrulleros'] },
+        { id: 'administrativo', nombre: '📝 Administrativo / Consultas', color: 'rgba(148,163,184,.12)', border: '#94a3b8',
+          keywords: ['inscripcion o consulta casa protegida','agradecimientos','felicitaciones','ayuda al vecino','consulta interna','consultas en general','contigencia fv','corte de llamada','en creación','encuestas','internos','llamada falsa','otros no clasificados','otros','aseo en espacio público','repetición de servicio','transferencia de llamada','solicitud de entrevista','reclamo de vecino en contra del servicio o funcionarios','supervisión a funcionario en terreno'] },
+        { id: 'preventivo', nombre: '🔍 Seguridad Preventiva', color: 'rgba(139,92,246,.18)', border: '#8b5cf6',
+          keywords: ['alerta analítica','alerta de aforo','alerta de merodeo','auto protegido','casa protegida ingresa','casa protegida','fono vacaciones ingresa','fono vacaciones','domicilio con puertas abiertas','domicilio marcado','marcas sospechosas','detección de vehículo con sistema lector','hallazgo de vehículo con encargo','encargo de vehículo','especies abandonadas','vigilancia especial','sospechoso en vía pública','vehículo abandonado','reporte brigada de halcones','vehículo abierto o con indicios de robo','reporte brigada de vigilancia aero-municipal'] },
+        { id: 'infraestructura', nombre: '🏗️ Infraestructura / Daños', color: 'rgba(161,98,7,.18)', border: '#a16207',
+          keywords: ['cables cortados','baja altura','desnivel en acera','desnivel en calzada','hoyo o hundimiento','luminaria en mal estado','desganche','árbol derribado','graffiti','daños a mobiliario público','daños a móviles municipales','daños a vehículo o propiedad','escombros en espacio','matriz rota','pabellón patrio','semáforo en mal estado','semaforo en mal estado'] },
+        { id: 'servicios_basicos', nombre: '💧 Servicios Básicos / Agua', color: 'rgba(59,130,246,.18)', border: '#3b82f6',
           keywords: ['corte de agua','corte de energía','cañeria rota','ausencia de medidor','calles anegadas','domicilio anegado','paso nivel anegado','canales de agua','grifo abierto','escurrimiento de aguas servidas','material de arrastre','entrega manga plástica'] },
-        { id: 'orden_publico', nombre: 'Orden Público', color: 'rgba(99,102,241,.18)', border: '#6366f1',
-          keywords: ['comercio ambulante','consumo de cannabis','alcohol en vía pública','infracción por ordenanza','fiscalización estacionadores','limpia vidrios','mendicidad','indigente','fumar en parques','no usar mascarilla'] },
-        { id: 'animales', nombre: 'Animales', color: 'rgba(16,185,129,.18)', border: '#10b981',
-          keywords: ['animales sueltos','encargo de mascota','perro suelto'] },
-        { id: 'patrullaje', nombre: 'Patrullaje / Turnos', color: 'rgba(229,231,235,.35)', border: '#d1d5db',
+        { id: 'orden_publico', nombre: '⚖️ Orden Público', color: 'rgba(99,102,241,.18)', border: '#6366f1',
+          keywords: ['comercio ambulante','consumo de cannabis','alcohol en vía pública','infracción por ordenanza','fiscalización estacionadores','limpia vidrios','mendicidad','indigente','fumar en parques','no usar mascarilla','vehículos mal estacionados','trabajos u ocupación vía pública'] },
+        { id: 'animales', nombre: '🐾 Animales', color: 'rgba(16,185,129,.18)', border: '#10b981',
+          keywords: ['animales sueltos','encargo de mascota','perro suelto','plagas'] },
+        { id: 'patrullaje', nombre: '🚶 Patrullaje / Turnos', color: 'rgba(229,231,235,.35)', border: '#d1d5db',
           keywords: ['patrullaje preventivo','inicio y/0 termino de turno','carga de combustible','constancia de servicio'] },
     ];
 
@@ -232,209 +222,66 @@
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
-    // ║  5. GEOCODING LOCAL (cámaras) + NOMINATIM FALLBACK            ║
+    // ║  5. COORDENADAS DESDE MAPA DE INCIDENTES (servidor)          ║
     // ╚═══════════════════════════════════════════════════════════════╝
 
+    /** Verifica que lat/lng estén dentro de los límites de Las Condes */
+    function inBounds(lat, lng) {
+        const b = CONFIG.BOUNDS;
+        return lat >= b.latMin && lat <= b.latMax && lng >= b.lonMin && lng <= b.lonMax;
+    }
+
     /**
-     * Geocoder local: indexa las ~2000 cámaras por nombre de calle.
-     * Resuelve ~85% de direcciones en <1ms sin API calls.
-     * Nominatim solo se usa como fallback asíncrono para calles desconocidas.
+     * Obtiene coordenadas reales desde /incident_maps.
+     * La página embebe un JSON en `new ModelMap('[...]')` con {id, lat, lng} por procedimiento.
+     * El `id` es el ID interno de Rails que coincide con los hrefs en /incidents.
+     * Retorna Map<internalId(string), [lat, lng]>
      */
-    const GEO = {
-        // Índice: streetName (normalizado) → [{lat, lng, streets: [street1, street2]}]
-        streetIndex: new Map(),
-        cache: new Map(),
-        nominatimQueue: [],
-        nominatimProcessing: false,
+    async function fetchIncidentMapCoords() {
+        try {
+            const resp = await fetch(CONFIG.INCIDENT_MAP_URL, {
+                credentials: 'same-origin',
+                headers: { 'Accept': 'text/html' },
+            });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const html = await resp.text();
 
-        /** Normaliza nombre de calle para comparación */
-        normStreet(s) {
-            return s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-                .replace(/\b(av|avenida|calle|pasaje|pje|psje|camino|cno)\b\.?\s*/g, '')
-                .replace(/\b(norte|sur|oriente|poniente|central)\b/g, '')
-                .replace(/[^a-z0-9\s]/g, '')
-                .replace(/\s+/g, ' ')
-                .trim();
-        },
+            // Extraer JSON del constructor: new ModelMap('[{\"id\":...}]')
+            // El JSON viene con comillas escapadas (\") dentro del string literal JS
+            const match = html.match(/new\s+ModelMap\s*\(\s*'(\[[\s\S]*?\])'\s*\)/);
+            if (!match) {
+                console.warn('[MapaIntegrado] No se encontró ModelMap en /incident_maps');
+                return new Map();
+            }
 
-        /** Construir índice desde datos de cámaras */
-        buildIndex(cameras) {
-            this.streetIndex.clear();
-            for (const cam of cameras) {
-                if (!cam.dir) continue;
-                // Cámaras usan "&" para intersecciones
-                const rawStreets = cam.dir.split(/\s*&\s*/);
-                const normed = rawStreets.map(s => this.normStreet(s)).filter(s => s.length > 2);
-
-                const entry = { lat: cam.lat, lng: cam.lng, streets: normed };
-                for (const st of normed) {
-                    if (!this.streetIndex.has(st)) this.streetIndex.set(st, []);
-                    this.streetIndex.get(st).push(entry);
+            const raw = match[1].replace(/\\"/g, '"').replace(/\\'/g, "'");
+            const items = JSON.parse(raw);
+            const coords = new Map();
+            for (const item of items) {
+                const lat = parseFloat(item.lat);
+                const lng = parseFloat(item.lng);
+                if (!isNaN(lat) && !isNaN(lng) && inBounds(lat, lng)) {
+                    coords.set(String(item.id), [lat, lng]);
                 }
             }
-            console.log(`[MapaIntegrado] GEO index: ${this.streetIndex.size} calles de ${cameras.length} cámaras`);
-        },
+            console.log(`[MapaIntegrado] Coords servidor: ${coords.size}/${items.length} en bounds`);
+            return coords;
+        } catch (e) {
+            console.error('[MapaIntegrado] Error obteniendo coords de incident_maps:', e);
+            return new Map();
+        }
+    }
 
-        /**
-         * Extrae calles de dirección de procedimiento.
-         * Formatos: "CALLE, 123" | "CALLE (CALLE2)" | "CALLE. CALLE2" | "CALLE / CALLE2"
-         * Retorna { streets: [str], number: str|null }
-         */
-        parseAddress(dir) {
-            if (!dir) return { streets: [], number: null };
-            let work = dir
-                .replace(/LPR\s*\d+\s*/gi, '')
-                .replace(/\(\s*([^)]+?)\s*\)/g, ' & $1')
-                .replace(/\.\s+/g, ' & ')
-                .replace(/\s*\/\s*/g, ' & ')
-                .trim();
+    /**
+     * Resuelve coordenadas para un procedimiento.
+     * Prioridad: 1) manualCoords (operador), 2) serverCoords (incident_maps)
+     */
+    function resolveCoords(procId, internalId) {
+        return S.procs.manualCoords.get(procId)
+            || (internalId && S.procs.serverCoords.get(internalId))
+            || null;
+    }
 
-            // Extraer numeración
-            let number = null;
-            const numMatch = work.match(/,\s*(\d+)\s*$/);
-            if (numMatch) {
-                number = numMatch[1];
-                work = work.replace(/,\s*\d+\s*$/, '');
-            } else {
-                const numMatch2 = work.match(/\s+(\d{2,5})\s*$/);
-                if (numMatch2) {
-                    number = numMatch2[1];
-                    work = work.replace(/\s+\d{2,5}\s*$/, '');
-                }
-            }
-
-            const parts = work.split(/\s*&\s*/).map(s => this.normStreet(s)).filter(s => s.length > 2);
-            return { streets: parts, number };
-        },
-
-        /**
-         * Geocodificación local: busca coincidencia en el índice de cámaras.
-         * Prioridad:
-         *   1. Intersección exacta (2 calles coinciden en misma ubicación)
-         *   2. Calle con numeración similar
-         *   3. Primera cámara en la calle principal
-         * Retorna [lat, lng] | null
-         */
-        localGeocode(dir) {
-            const { streets, number } = this.parseAddress(dir);
-            if (streets.length === 0) return null;
-
-            // Buscar cámaras que contengan la calle principal
-            const mainStreet = streets[0];
-            let candidates = [];
-
-            // Match flexible: buscar cualquier calle del índice que contenga o esté contenida en mainStreet
-            for (const [indexedStreet, entries] of this.streetIndex) {
-                if (indexedStreet.includes(mainStreet) || mainStreet.includes(indexedStreet)) {
-                    candidates.push(...entries);
-                }
-            }
-
-            if (candidates.length === 0) return null;
-
-            // Si tenemos segunda calle, buscar intersección
-            if (streets.length > 1) {
-                const secondStreet = streets[1];
-                const intersectionMatches = candidates.filter(c =>
-                    c.streets.some(s => s.includes(secondStreet) || secondStreet.includes(s))
-                );
-                if (intersectionMatches.length > 0) {
-                    // Intersección encontrada → usar primera coincidencia
-                    return [intersectionMatches[0].lat, intersectionMatches[0].lng];
-                }
-            }
-
-            // Sin intersección o sin match de segunda calle → usar primera cámara en la calle
-            // Si hay numeración, elegir la más cercana al centro de los candidatos
-            if (candidates.length === 1) return [candidates[0].lat, candidates[0].lng];
-
-            // Promedio de coordenadas de candidatos (centro de la calle)
-            const avgLat = candidates.reduce((s, c) => s + c.lat, 0) / candidates.length;
-            const avgLng = candidates.reduce((s, c) => s + c.lng, 0) / candidates.length;
-            return [avgLat, avgLng];
-        },
-
-        /**
-         * Geocodificar: intenta local primero, retorna resultado o null.
-         * Si es null, se puede encolar Nominatim como fallback.
-         */
-        geocode(dir) {
-            if (!dir) return null;
-            const clave = dir.toUpperCase().trim();
-            if (this.cache.has(clave)) return this.cache.get(clave);
-
-            const coords = this.localGeocode(dir);
-            if (coords && dentroDeLC(coords[0], coords[1])) {
-                this.cache.set(clave, coords);
-                return coords;
-            }
-            return null;
-        },
-
-        /** Nominatim fallback asíncrono para direcciones no resueltas */
-        async nominatimFallback(dir) {
-            if (!dir) return null;
-            const clave = dir.toUpperCase().trim();
-            if (this.cache.has(clave)) return this.cache.get(clave);
-
-            const base = prepararDireccion(dir);
-            const viewbox = '-70.62,-33.36,-70.49,-33.44';
-
-            const queries = [base];
-            const sinNum = base.replace(/\s+\d+\s*$/, '').trim();
-            if (sinNum !== base) queries.push(sinNum);
-
-            for (const q of queries) {
-                const full = q + ', Las Condes, Santiago, Chile';
-                try {
-                    const resp = await fetch(
-                        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(full)}&limit=1&bounded=1&viewbox=${viewbox}`
-                    );
-                    if (!resp.ok) continue;
-                    const data = await resp.json();
-                    if (data.length > 0) {
-                        const lat = parseFloat(data[0].lat);
-                        const lon = parseFloat(data[0].lon);
-                        if (dentroDeLC(lat, lon)) {
-                            const coords = [lat, lon];
-                            this.cache.set(clave, coords);
-                            return coords;
-                        }
-                    }
-                } catch (e) {
-                    console.warn('[MapaIntegrado] Nominatim:', q, e.message);
-                }
-                await sleep(CONFIG.GEO_THROTTLE);
-            }
-
-            this.cache.set(clave, null);
-            return null;
-        },
-
-        /** Encolar fallback Nominatim con callback para actualizar mapa */
-        enqueueNominatim(dir, procId) {
-            this.nominatimQueue.push({ dir, procId });
-            this._processNominatimQueue();
-        },
-
-        async _processNominatimQueue() {
-            if (this.nominatimProcessing) return;
-            this.nominatimProcessing = true;
-            while (this.nominatimQueue.length > 0) {
-                const { dir, procId } = this.nominatimQueue.shift();
-                const clave = dir?.toUpperCase().trim();
-                if (clave && this.cache.has(clave)) continue; // Ya resuelto por otro
-
-                const coords = await this.nominatimFallback(dir);
-                if (coords) {
-                    // Agregar marcador al mapa si aún existe el procedimiento
-                    agregarMarcadorProc(procId, coords);
-                }
-            }
-            this.nominatimProcessing = false;
-            renderPanelGeoStatus();
-        },
-    };
 
     // ╔═══════════════════════════════════════════════════════════════╗
     // ║  6. SCRAPER DE PROCEDIMIENTOS (con retry)                     ║
@@ -447,6 +294,7 @@
         const resultados = [];
         const ahora = Date.now();
         const limite = ahora - CONFIG.VENTANA_MIN * 60000;
+        let hayRecientes = false;
 
         filas.forEach(fila => {
             const celdas = fila.querySelectorAll('td');
@@ -460,6 +308,7 @@
             const fecha = new Date(+m[3], +m[2] - 1, +m[1], +m[4], +m[5]);
 
             if (fecha.getTime() < limite) return;
+            hayRecientes = true;
 
             const areaHTML = celdas[0]?.innerHTML || '';
             const estado = areaHTML.includes('badge-danger') ? 'PENDIENTE' : 'CERRADO';
@@ -470,36 +319,55 @@
             const desc = descRaw.split('\n')[0]?.substring(0, 120) || '';
             const dir = celdas[6]?.textContent?.trim() || '';
 
+            // Extraer ID interno de Rails desde links: /incidents/1846600
+            const internalLink = fila.querySelector('a[href*="/incidents/"]');
+            const iidMatch = internalLink?.href?.match(/\/incidents\/(\d+)/);
+            const internalId = iidMatch ? iidMatch[1] : null;
+
             resultados.push({
                 fecha: fechaTexto, fechaObj: fecha,
                 tipo, id, operador, desc, dir,
                 estado, cat: clasificar(tipo),
+                internalId,
             });
         });
 
         resultados.sort((a, b) => b.fechaObj - a.fechaObj);
-        return resultados;
+        return { resultados, seguirBuscando: hayRecientes && filas.length > 0 };
     }
 
     async function fetchProcedimientos() {
-        let lastError = null;
-        for (let attempt = 0; attempt <= CONFIG.FETCH_MAX_RETRIES; attempt++) {
+        const todos = new Map(); // id → proc (dedup por ID público)
+
+        for (let pag = 1; pag <= CONFIG.MAX_PAGINAS; pag++) {
             try {
-                if (attempt > 0) await sleep(CONFIG.FETCH_RETRY_DELAY * attempt);
-                const resp = await fetch(CONFIG.PROC_URL, {
+                if (pag > 1) await sleep(CONFIG.DELAY_ENTRE_PAGINAS);
+                const url = `${CONFIG.PROC_URL}?_=${Date.now()}&page=${pag}`;
+                const resp = await fetch(url, {
                     credentials: 'same-origin',
                     headers: { 'Accept': 'text/html' },
                 });
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                if (!resp.ok) {
+                    console.warn(`[MapaIntegrado] Pág ${pag} HTTP ${resp.status}`);
+                    break;
+                }
                 const html = await resp.text();
-                return { procs: parseProcedimientosHTML(html), live: true };
+                const { resultados, seguirBuscando } = parseProcedimientosHTML(html);
+
+                for (const proc of resultados) {
+                    if (!todos.has(proc.id)) todos.set(proc.id, proc);
+                }
+
+                if (!seguirBuscando) break;
             } catch (e) {
-                lastError = e;
-                console.warn(`[MapaIntegrado] Fetch intento ${attempt + 1} fallido:`, e.message);
+                console.warn(`[MapaIntegrado] Pág ${pag} error:`, e.message);
+                break;
             }
         }
-        console.error('[MapaIntegrado] Fetch agotó reintentos:', lastError);
-        return { procs: [], live: false };
+
+        const procs = [...todos.values()].sort((a, b) => b.fechaObj - a.fechaObj);
+        console.log(`[MapaIntegrado] ${procs.length} procedimientos en ventana de ${CONFIG.VENTANA_MIN}min`);
+        return { procs, live: procs.length > 0 || todos.size === 0 };
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
@@ -2648,34 +2516,34 @@
                 position:fixed; top:0; left:0; right:0; z-index:1000;
                 background:rgba(15,17,23,.92); backdrop-filter:blur(12px);
                 border-bottom:1px solid rgba(255,255,255,.06);
-                padding:8px 16px; display:flex; align-items:center; justify-content:space-between;
-                height:42px;
+                padding:10px 20px; display:flex; align-items:center; justify-content:space-between;
+                height:52px;
             }
-            #mi-topbar .left { display:flex; align-items:center; gap:12px; }
-            #mi-topbar .right { display:flex; align-items:center; gap:16px; }
-            #mi-topbar h1 { font-size:14px; font-weight:700; color:#fff; margin:0; }
-            .mi-badge { background:rgba(37,99,235,.25); color:#60a5fa; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+            #mi-topbar .left { display:flex; align-items:center; gap:14px; }
+            #mi-topbar .right { display:flex; align-items:center; gap:18px; }
+            #mi-topbar h1 { font-size:17px; font-weight:700; color:#fff; margin:0; }
+            .mi-badge { background:rgba(37,99,235,.25); color:#60a5fa; padding:3px 10px; border-radius:10px; font-size:13px; font-weight:600; }
             .mi-badge.live { background:rgba(16,185,129,.2); color:#34d399; }
             .mi-badge.demo { background:rgba(245,158,11,.2); color:#fbbf24; }
             #mi-back {
                 background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.1);
-                color:#fff; padding:4px 10px; border-radius:6px; cursor:pointer;
-                font:500 11px -apple-system,sans-serif; transition:all .2s;
+                color:#fff; padding:5px 14px; border-radius:6px; cursor:pointer;
+                font:500 13px -apple-system,sans-serif; transition:all .2s;
             }
             #mi-back:hover { background:rgba(255,255,255,.15); }
-            .mi-stat { font-size:11px; color:rgba(255,255,255,.5); }
+            .mi-stat { font-size:13px; color:rgba(255,255,255,.5); }
             .mi-stat strong { color:rgba(255,255,255,.8); }
-            .mi-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:3px; }
+            .mi-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; }
             .mi-dot.p { background:#f87171; } .mi-dot.c { background:#60a5fa; }
-            #mi-clock { font:600 12px -apple-system,sans-serif; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; }
-            #mi-refresh-info { font-size:10px; color:rgba(255,255,255,.35); display:flex; align-items:center; gap:4px; }
-            .mi-spinner { width:8px;height:8px;border:1.5px solid rgba(96,165,250,.3);border-top-color:#60a5fa;border-radius:50%;display:none;animation:mi-spin .5s linear infinite; }
+            #mi-clock { font:600 15px -apple-system,sans-serif; color:rgba(255,255,255,.6); font-variant-numeric:tabular-nums; }
+            #mi-refresh-info { font-size:12px; color:rgba(255,255,255,.35); display:flex; align-items:center; gap:5px; }
+            .mi-spinner { width:10px;height:10px;border:2px solid rgba(96,165,250,.3);border-top-color:#60a5fa;border-radius:50%;display:none;animation:mi-spin .5s linear infinite; }
             .mi-spinner.on { display:inline-block; }
             @keyframes mi-spin { to{transform:rotate(360deg)} }
 
             /* ═══ PANEL ÚLTIMA HORA ═══ */
             #mi-panel {
-                position:fixed; top:42px; right:0; width:340px; bottom:0; z-index:999;
+                position:fixed; top:52px; right:0; width:480px; bottom:0; z-index:999;
                 background:rgba(15,17,23,.94); backdrop-filter:blur(16px);
                 border-left:1px solid rgba(255,255,255,.06);
                 display:flex; flex-direction:column;
@@ -2683,92 +2551,121 @@
             }
             #mi-panel.collapsed { transform:translateX(100%); }
             #mi-panel-toggle {
-                position:fixed; top:52px; right:352px; z-index:1001;
+                position:fixed; top:62px; right:492px; z-index:1001;
                 background:rgba(15,17,23,.85); border:1px solid rgba(255,255,255,.1);
-                color:#e2e4e9; padding:6px 10px; border-radius:6px; cursor:pointer;
-                font:600 11px -apple-system,sans-serif; transition:all .25s;
+                color:#e2e4e9; padding:8px 14px; border-radius:6px; cursor:pointer;
+                font:600 14px -apple-system,sans-serif; transition:all .25s;
             }
             #mi-panel.collapsed ~ #mi-panel-toggle { right:12px; }
             #mi-panel-toggle:hover { background:rgba(37,99,235,.25); }
             #mi-panel-head {
-                padding:12px 14px 8px; border-bottom:1px solid rgba(255,255,255,.06); flex-shrink:0;
+                padding:14px 18px 10px; border-bottom:1px solid rgba(255,255,255,.06); flex-shrink:0;
             }
-            #mi-panel-head h3 { font-size:13px; font-weight:700; color:#fff; margin:0 0 6px; display:flex; align-items:center; gap:6px; }
+            #mi-panel-head h3 { font-size:16px; font-weight:700; color:#fff; margin:0 0 6px; display:flex; align-items:center; gap:8px; }
             #mi-panel-body { flex:1; overflow-y:auto; padding:2px 0; }
-            #mi-panel-body::-webkit-scrollbar { width:3px; }
+            #mi-panel-body::-webkit-scrollbar { width:4px; }
             #mi-panel-body::-webkit-scrollbar-thumb { background:rgba(255,255,255,.12); border-radius:2px; }
 
             .mi-sec {
-                padding:5px 14px; font:700 9px -apple-system,sans-serif;
+                padding:7px 18px; font:700 11px -apple-system,sans-serif;
                 text-transform:uppercase; letter-spacing:.7px; color:rgba(255,255,255,.3);
                 background:rgba(255,255,255,.02); position:sticky; top:0; z-index:2;
             }
             .mi-card {
-                padding:8px 14px; border-bottom:1px solid rgba(255,255,255,.03);
-                cursor:pointer; transition:background .12s; border-left:3px solid transparent;
+                padding:12px 18px; margin:0 8px 6px; border-radius:6px;
+                cursor:pointer; transition:background .12s, opacity .15s; border-left:4px solid transparent;
             }
             .mi-card:hover { filter:brightness(1.3); }
-            .mi-card.closed { opacity:0.5; }
-            .mi-card.closed:hover { opacity:0.75; }
+            .mi-card.closed { opacity:0.45; }
+            .mi-card.closed:hover { opacity:0.7; }
+            .mi-card.pinned { border-left-color:#fbbf24!important; box-shadow:inset 0 0 0 1px rgba(251,191,36,.15); }
+            .mi-sec.pinned-sec { color:rgba(251,191,36,.6); background:rgba(251,191,36,.04); }
             .mi-card.new { animation:mi-flash .6s ease 2; }
             @keyframes mi-flash { 0%,100%{background:transparent} 50%{background:rgba(251,191,36,.1)} }
 
-            .mi-card-top { display:flex; justify-content:space-between; align-items:flex-start; gap:6px; margin-bottom:3px; }
-            .mi-card-tipo { font-size:11px; font-weight:600; color:#fff; flex:1; }
+            .mi-card-top { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; }
+            .mi-card-tipo { font-size:14px; font-weight:600; color:#fff; flex:1; line-height:1.3; }
+            .mi-card-right { display:flex; align-items:center; gap:6px; flex-shrink:0; }
             .mi-card-est {
-                font-size:8px; font-weight:700; padding:1px 5px; border-radius:3px;
-                text-transform:uppercase; letter-spacing:.2px; flex-shrink:0;
+                font-size:10px; font-weight:700; padding:2px 7px; border-radius:3px;
+                text-transform:uppercase; letter-spacing:.3px;
             }
-            .mi-card-est.p { background:rgba(239,68,68,.12); color:#f87171; }
-            .mi-card-est.c { background:rgba(96,165,250,.1); color:#60a5fa; }
-            .mi-card-meta { font-size:9px; color:rgba(255,255,255,.35); display:flex; gap:6px; margin-bottom:2px; }
-            .mi-card-id { cursor:pointer; transition:color .12s; }
+            .mi-card-est.p { background:rgba(239,68,68,.15); color:#f87171; }
+            .mi-card-est.c { background:rgba(96,165,250,.12); color:#60a5fa; }
+            .mi-card-id {
+                font:500 12px 'SF Mono',Consolas,monospace; color:rgba(255,255,255,.5);
+                cursor:pointer; transition:color .12s; letter-spacing:.3px; margin-left:auto;
+            }
             .mi-card-id:hover { color:#60a5fa; text-decoration:underline; }
             .mi-card-id.copied { color:#34d399; }
-            .mi-card-dir { font-size:10px; color:rgba(255,255,255,.5); }
-            .mi-card-btns { display:flex; gap:3px; margin-top:4px; }
+            .mi-card-info { display:flex; align-items:center; gap:8px; margin-bottom:3px; }
+            .mi-card-hora { font-size:13px; color:rgba(255,255,255,.45); font-weight:500; }
+            .mi-card-dir { font-size:13px; color:rgba(255,255,255,.55); line-height:1.3; margin-bottom:2px; }
+            .mi-card-desc { font-size:12px; color:rgba(255,255,255,.35); line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+            .mi-card-btns { display:flex; gap:4px; margin-top:8px; flex-wrap:wrap; }
             .mi-card-btns button {
                 background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.07);
-                color:rgba(255,255,255,.45); padding:1px 6px; border-radius:3px;
-                font:500 8px -apple-system,sans-serif; cursor:pointer; transition:all .12s;
+                color:rgba(255,255,255,.5); padding:4px 10px; border-radius:4px;
+                font:500 11px -apple-system,sans-serif; cursor:pointer; transition:all .12s;
             }
             .mi-card-btns button:hover { background:rgba(37,99,235,.18); color:#60a5fa; border-color:rgba(37,99,235,.3); }
+            .mi-card-btns button[data-action="locate"] { background:rgba(251,191,36,.12); color:#fbbf24; border-color:rgba(251,191,36,.2); font-weight:600; }
+            .mi-card-btns button[data-action="locate"]:hover { background:rgba(251,191,36,.25); }
+            .mi-card-btns button[data-action="ignore"] { margin-left:auto; color:rgba(255,255,255,.3); }
+            .mi-card-btns button[data-action="ignore"]:hover { color:#f87171; background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.2); }
+
+            /* ═══ PLACEMENT MODE ═══ */
+            #mi-placement-banner {
+                position:fixed; top:58px; left:50%; transform:translateX(-50%); z-index:1100;
+                background:rgba(251,191,36,.15); backdrop-filter:blur(12px);
+                border:1.5px solid rgba(251,191,36,.4); border-radius:8px;
+                padding:10px 24px; display:none; align-items:center; gap:14px;
+                font:600 14px -apple-system,sans-serif; color:#fbbf24;
+                box-shadow:0 4px 20px rgba(0,0,0,.4); pointer-events:none;
+                animation:mi-pulse-border 1.5s ease-in-out infinite;
+            }
+            #mi-placement-banner.on { display:flex; }
+            #mi-placement-banner .esc { color:rgba(255,255,255,.5); font-size:12px; font-weight:400; }
+            @keyframes mi-pulse-border { 0%,100%{border-color:rgba(251,191,36,.4)} 50%{border-color:rgba(251,191,36,.8)} }
+            .placement-active { cursor:crosshair!important; }
+            .placement-active .leaflet-container { cursor:crosshair!important; }
+            .placement-active * { cursor:crosshair!important; }
 
             /* ═══ LEYENDA ═══ */
             #mi-legend {
-                position:fixed; bottom:12px; left:12px; z-index:999;
+                position:fixed; bottom:16px; left:16px; z-index:999;
                 background:rgba(15,17,23,.88); backdrop-filter:blur(8px);
                 border:1px solid rgba(255,255,255,.08); border-radius:6px;
-                padding:6px 10px; font-size:9px;
+                padding:8px 14px; font-size:11px;
             }
-            #mi-legend h4 { font:600 9px -apple-system,sans-serif; color:rgba(255,255,255,.4); margin:0 0 3px; text-transform:uppercase; letter-spacing:.5px; }
-            .mi-leg { display:flex; align-items:center; gap:5px; margin:1px 0; color:rgba(255,255,255,.45); }
-            .mi-leg-d { width:7px; height:7px; border-radius:50%; }
+            #mi-legend h4 { font:600 11px -apple-system,sans-serif; color:rgba(255,255,255,.4); margin:0 0 4px; text-transform:uppercase; letter-spacing:.5px; }
+            .mi-leg { display:flex; align-items:center; gap:6px; margin:2px 0; color:rgba(255,255,255,.45); }
+            .mi-leg-d { width:9px; height:9px; border-radius:50%; }
 
             .mi-cursor-tooltip {
                 background:rgba(0,0,0,.8)!important; border:1px solid rgba(52,211,153,.4)!important;
-                color:#34d399!important; font:700 12px -apple-system,sans-serif!important;
-                padding:2px 6px!important; border-radius:4px!important; box-shadow:none!important;
+                color:#34d399!important; font:700 14px -apple-system,sans-serif!important;
+                padding:3px 8px!important; border-radius:4px!important; box-shadow:none!important;
             }
             .mi-cursor-tooltip::before { display:none!important; }
 
             /* ═══ NEARBY CAMERA LABELS ═══ */
             .mi-nearby-label {
                 background:rgba(0,0,0,.85); backdrop-filter:blur(6px);
-                border-radius:4px; padding:3px 6px;
-                font:700 10px -apple-system,sans-serif;
+                border-radius:4px; padding:4px 8px;
+                font:700 12px -apple-system,sans-serif;
                 white-space:nowrap; pointer-events:none;
                 border:1px solid rgba(255,255,255,.15);
                 box-shadow:0 2px 8px rgba(0,0,0,.5);
                 line-height:1.3;
             }
             .mi-nearby-square {
-                display:inline-block; width:6px; height:6px;
-                border-radius:1px; margin-right:3px; vertical-align:middle;
+                display:inline-block; width:8px; height:8px;
+                border-radius:1px; margin-right:4px; vertical-align:middle;
             }
 
             .mi-cam-popup .leaflet-popup-content-wrapper { padding:0!important; min-width:auto!important; }
-            .mi-cam-popup .leaflet-popup-content { margin:5px 8px!important; }
+            .mi-cam-popup .leaflet-popup-content { margin:6px 10px!important; }
 
             /* ═══ LEAFLET POPUP OVERRIDE ═══ */
             .leaflet-popup-content-wrapper {
@@ -2780,13 +2677,13 @@
             .mi-proc-popup .leaflet-popup-content-wrapper {
                 background:rgba(15,17,23,.85)!important; border-color:rgba(255,255,255,.06)!important;
                 box-shadow:0 2px 12px rgba(0,0,0,.3)!important; backdrop-filter:blur(6px)!important;
-                overflow:hidden!important; border-left:3px solid var(--mi-proc-color, rgba(255,255,255,.2))!important;
+                overflow:hidden!important; border-left:4px solid var(--mi-proc-color, rgba(255,255,255,.2))!important;
             }
-            .mi-proc-popup .leaflet-popup-content { margin:8px 12px 8px!important; }
+            .mi-proc-popup .leaflet-popup-content { margin:10px 14px 10px!important; }
             .mi-proc-popup .leaflet-popup-tip { background:rgba(15,17,23,.55)!important; }
             .mi-proc-popup { pointer-events:none; }
             .mi-proc-popup .leaflet-popup-content-wrapper { pointer-events:auto; }
-            .leaflet-popup-content { margin:8px 12px!important; font:12px -apple-system,sans-serif!important; line-height:1.4!important; }
+            .leaflet-popup-content { margin:10px 14px!important; font:14px -apple-system,sans-serif!important; line-height:1.4!important; }
         `;
     }
 
@@ -2825,12 +2722,16 @@
             </div>
 
             <!-- MAPA -->
-            <div id="mi-map" style="top:42px"></div>
+            <div id="mi-map" style="top:52px"></div>
+            <div id="mi-placement-banner">
+                <span>🎯 Click en el mapa para reubicar procedimiento</span>
+                <span class="esc">ESC: Cancelar</span>
+            </div>
 
             <!-- PANEL -->
             <div id="mi-panel">
                 <div id="mi-panel-head">
-                    <h3>Pendientes <span class="mi-badge" id="mi-proc-cnt">0</span></h3>
+                    <h3>Procedimientos <span class="mi-badge" id="mi-proc-cnt">0</span></h3>
                 </div>
                 <div id="mi-panel-body"></div>
             </div>
@@ -3058,6 +2959,11 @@
 
         // ══ TOOL 3: RADIO ══
         S.map.on('click', (e) => {
+            // Placement mode: interceptar click antes de draw
+            if (S.placement.active) {
+                confirmarPlacement(e.latlng);
+                return;
+            }
             if (d.mode !== 3) return;
             const latlng = e.latlng;
             const color = DRAW_COLORS[3];
@@ -3104,26 +3010,34 @@
 
     function cardHTML(p) {
         const hora = p.fecha.match(/\d{2}:\d{2}/)?.[0] || p.fecha;
-        const idDisplay = p.id.length > 4 ? p.id.slice(0, -4) + '-' + p.id.slice(-4) : p.id;
         const isPendiente = p.estado === 'PENDIENTE';
+        const isPinned = S.procs.pinned.has(p.id);
+        const hasCoords = !!resolveCoords(p.id, p.internalId);
+        const dirIcon = hasCoords ? '📍' : '<span style="color:rgba(251,191,36,.6)">⚠</span>';
         const dirLine = p.dir
-            ? `<div class="mi-card-dir">📍 ${esc(p.dir)}</div>`
+            ? `<div class="mi-card-dir">${dirIcon} ${esc(p.dir)}</div>`
             : `<div class="mi-card-dir" style="color:rgba(251,191,36,.5)">⚠ Sin dirección</div>`;
+        const descLine = p.desc ? `<div class="mi-card-desc" title="${esc(p.desc)}">${esc(p.desc)}</div>` : '';
         return `
-            <div class="mi-card${isPendiente ? '' : ' closed'}" data-id="${esc(p.id)}" style="border-left-color:${isPendiente ? p.cat.border : 'transparent'};background:${p.cat.color}">
+            <div class="mi-card${isPendiente ? '' : ' closed'}${isPinned ? ' pinned' : ''}" data-id="${esc(p.id)}" style="border-left-color:${isPendiente ? p.cat.border : 'transparent'};background:${p.cat.color}">
                 <div class="mi-card-top">
                     <span class="mi-card-tipo" style="color:${p.cat.border}">${esc(p.tipo)}</span>
-                    <span class="mi-card-est ${isPendiente ? 'p' : 'c'}">${isPendiente ? 'PENDIENTE' : 'CERRADO'}</span>
+                    <div class="mi-card-right">
+                        <span class="mi-card-est ${isPendiente ? 'p' : 'c'}">${isPendiente ? 'PENDIENTE' : 'CERRADO'}</span>
+                    </div>
                 </div>
-                <div class="mi-card-meta">
-                    <span>🕐 ${esc(hora)}</span>
-                    <span class="mi-card-id" data-action="copy" data-copy="${esc(p.id)}">ID: ${esc(idDisplay)}</span>
+                <div class="mi-card-info">
+                    <span class="mi-card-hora">🕐 ${esc(hora)}</span>
+                    <span class="mi-card-id" data-action="copy" data-copy="${esc(p.id)}">${esc(p.id)}</span>
                 </div>
                 ${dirLine}
+                ${descLine}
                 <div class="mi-card-btns">
-                    <button data-action="arcgis" data-dir="${esc(p.dir)}" data-pid="${esc(p.id)}">🗺️ ArcGIS</button>
-                    <button data-action="gmaps" data-dir="${esc(p.dir)}">📍 GMaps</button>
-                    <button data-action="ignore" data-id="${esc(p.id)}">✕ Ignorar</button>
+                    <button data-action="locate" data-id="${esc(p.id)}">🎯 Reubicar</button>
+                    <button data-action="pin" data-id="${esc(p.id)}" title="${isPinned ? 'Desfijar' : 'Fijar'}">${isPinned ? '📌 Desfijar' : '📍 Fijar'}</button>
+                    <button data-action="arcgis" data-dir="${esc(p.dir)}" data-pid="${esc(p.id)}">🗺️</button>
+                    <button data-action="gmaps" data-dir="${esc(p.dir)}">📍</button>
+                    <button data-action="ignore" data-id="${esc(p.id)}">✕</button>
                 </div>
             </div>`;
     }
@@ -3133,16 +3047,36 @@
         if (!container) return;
         const body = container.querySelector('#mi-panel-body');
 
-        const active = S.procs.all.filter(p => !S.procs.ignored.has(p.id));
-        const pendientes = active.filter(p => p.estado === 'PENDIENTE');
-        const cerrados = active.filter(p => p.estado === 'CERRADO');
-        const ignorados = S.procs.all.filter(p => S.procs.ignored.has(p.id));
+        // Merge: procedimientos actuales + fijados que ya salieron de la ventana temporal
+        const currentIds = new Set(S.procs.all.map(p => p.id));
+        const merged = [...S.procs.all];
+        for (const [id, data] of S.procs.pinnedData) {
+            if (!currentIds.has(id)) {
+                merged.push(data); // Agregar fijado que ya no está en ventana
+            }
+        }
 
-        container.querySelector('#mi-proc-cnt').textContent = pendientes.length;
+        // Actualizar datos de fijados (puede haber cambiado estado)
+        for (const p of merged) {
+            if (S.procs.pinned.has(p.id)) S.procs.pinnedData.set(p.id, p);
+        }
+
+        const active = merged.filter(p => !S.procs.ignored.has(p.id));
+        const pinned = active.filter(p => S.procs.pinned.has(p.id));
+        const notPinned = active.filter(p => !S.procs.pinned.has(p.id));
+        const pendientes = notPinned.filter(p => p.estado === 'PENDIENTE');
+        const cerrados = notPinned.filter(p => p.estado === 'CERRADO');
+        const ignorados = merged.filter(p => S.procs.ignored.has(p.id));
+
+        container.querySelector('#mi-proc-cnt').textContent = active.length;
         container.querySelector('#mi-cnt-p').textContent = pendientes.length;
         container.querySelector('#mi-cnt-c').textContent = ignorados.length;
 
         let html = '';
+        if (pinned.length > 0) {
+            html += `<div class="mi-sec pinned-sec">📌 Fijados (${pinned.length})</div>`;
+            html += pinned.map(cardHTML).join('');
+        }
         if (pendientes.length > 0) {
             html += `<div class="mi-sec">Pendientes (${pendientes.length})</div>`;
             html += pendientes.map(cardHTML).join('');
@@ -3168,7 +3102,7 @@
             if (!card) return;
             const entry = S.procs.markers.get(card.dataset.id);
             if (entry?.marker) {
-                entry.marker.setStyle({ radius: 12, weight: 3 });
+                entry.marker.setStyle({ radius: 15, weight: 3 });
                 entry.marker.openPopup();
             }
         }, { signal });
@@ -3178,7 +3112,7 @@
             if (!card) return;
             const entry = S.procs.markers.get(card.dataset.id);
             if (entry?.marker) {
-                entry.marker.setStyle({ radius: 8, weight: 2 });
+                entry.marker.setStyle({ radius: entry.proc?.estado === 'PENDIENTE' ? 10 : 7, weight: entry.proc?.estado === 'PENDIENTE' ? 2.5 : 1.5 });
                 entry.marker.closePopup();
             }
         }, { signal });
@@ -3219,6 +3153,8 @@
                     e.stopPropagation();
                     const id = actionEl.dataset.id;
                     S.procs.ignored.add(id);
+                    S.procs.pinned.delete(id);
+                    S.procs.pinnedData.delete(id);
                     const entry = S.procs.markers.get(id);
                     if (entry?.marker) {
                         S.layers.proc.removeLayer(entry.marker);
@@ -3226,11 +3162,40 @@
                     S.procs.markers.delete(id);
                     S.layers.nearby?.clearLayers();
                     renderPanel();
+                    renderPanelGeoStatus();
+                    return;
+                }
+
+                if (action === 'pin') {
+                    e.stopPropagation();
+                    const id = actionEl.dataset.id;
+                    if (S.procs.pinned.has(id)) {
+                        // Desfijar
+                        S.procs.pinned.delete(id);
+                        S.procs.pinnedData.delete(id);
+                    } else {
+                        // Fijar — guardar datos completos
+                        const proc = S.procs.all.find(p => p.id === id)
+                            || S.procs.pinnedData.get(id)
+                            || S.procs.markers.get(id)?.proc;
+                        if (proc) {
+                            S.procs.pinned.add(id);
+                            S.procs.pinnedData.set(id, proc);
+                        }
+                    }
+                    renderPanel();
+                    renderPanelGeoStatus();
+                    return;
+                }
+
+                if (action === 'locate') {
+                    e.stopPropagation();
+                    iniciarPlacement(actionEl.dataset.id);
                     return;
                 }
             }
 
-            // Click en card → centrar en mapa o buscar en ArcGIS si no hay ubicación
+            // Click en card → centrar en mapa o iniciar ubicación manual
             const card = target.closest('.mi-card');
             if (card) {
                 const entry = S.procs.markers.get(card.dataset.id);
@@ -3238,11 +3203,91 @@
                 if (entry.coords) {
                     centrarEnProcedimiento(entry);
                 } else {
-                    // Sin geocodificación → abrir ArcGIS como fallback
-                    abrirEnArcGIS(entry.proc.dir, entry.proc.id);
+                    // Sin ubicación → iniciar placement mode
+                    iniciarPlacement(entry.proc.id);
                 }
             }
         }, { signal });
+    }
+
+    // ╔═══════════════════════════════════════════════════════════════╗
+    // ║  13b. REUBICACIÓN MANUAL (PLACEMENT MODE)                      ║
+    // ╚═══════════════════════════════════════════════════════════════╝
+
+    function iniciarPlacement(procId) {
+        // Si ya hay draw mode activo, cancelarlo
+        if (S.draw.mode) {
+            S.draw.mode = null;
+            actualizarIndicadorDibujo(null);
+        }
+
+        S.placement.active = true;
+        S.placement.procId = procId;
+
+        // UI feedback
+        const banner = S.ui.container?.querySelector('#mi-placement-banner');
+        if (banner) banner.classList.add('on');
+        S.ui.container?.classList.add('placement-active');
+
+        // Highlight the card
+        const card = S.ui.container?.querySelector(`.mi-card[data-id="${procId}"]`);
+        if (card) card.style.outline = '2px solid #fbbf24';
+
+        // Si ya tiene coords, panear ahí para dar contexto visual al operador
+        const entry = S.procs.markers.get(procId);
+        if (entry?.coords) {
+            S.map.setView(entry.coords, Math.max(S.map.getZoom(), 16), { animate: true });
+        } else if (entry?.proc?.dir) {
+            // Sin coords → abrir ArcGIS para referencia
+            abrirEnArcGIS(entry.proc.dir, procId);
+        }
+    }
+
+    function cancelarPlacement() {
+        if (!S.placement.active) return;
+        const procId = S.placement.procId;
+        S.placement.active = false;
+        S.placement.procId = null;
+
+        const banner = S.ui.container?.querySelector('#mi-placement-banner');
+        if (banner) banner.classList.remove('on');
+        S.ui.container?.classList.remove('placement-active');
+
+        // Remove card highlight
+        const card = S.ui.container?.querySelector(`.mi-card[data-id="${procId}"]`);
+        if (card) card.style.outline = '';
+    }
+
+    function confirmarPlacement(latlng) {
+        if (!S.placement.active || !S.placement.procId) return;
+        const procId = S.placement.procId;
+        const coords = [latlng.lat, latlng.lng];
+
+        // Guardar coordenadas manuales (persisten a través de refreshes)
+        S.procs.manualCoords.set(procId, coords);
+
+        // Auto-fijar el procedimiento
+        const entry = S.procs.markers.get(procId);
+        if (entry?.proc) {
+            S.procs.pinned.add(procId);
+            S.procs.pinnedData.set(procId, entry.proc);
+        }
+
+        // Crear/actualizar marcador en el mapa
+        agregarMarcadorProc(procId, coords, entry?.proc);
+
+        // Mostrar cámaras cercanas
+        mostrarCamarasCercanas(coords);
+
+        // Centrar vista
+        S.map.setView(coords, 17, { animate: true });
+
+        // Limpiar placement mode
+        cancelarPlacement();
+
+        // Re-render panel para actualizar botones y estado
+        renderPanel();
+        renderPanelGeoStatus();
     }
 
     // ╔═══════════════════════════════════════════════════════════════╗
@@ -3279,8 +3324,8 @@
 
     function centrarEnProcedimiento(entry) {
         const panelOpen = !document.querySelector('#mi-panel')?.classList.contains('collapsed');
-        const panelW = panelOpen ? 340 : 0;
-        const topbarH = 42;
+        const panelW = panelOpen ? 480 : 0;
+        const topbarH = 52;
         const mapSize = S.map.getSize();
         const centerX = (mapSize.x - panelW) / 2;
         const centerY = topbarH + ((mapSize.y - topbarH) / 2);
@@ -3303,19 +3348,22 @@
         S.layers.proc.clearLayers();
         S.procs.markers.clear();
 
-        const visible = S.procs.all.filter(p => !S.procs.ignored.has(p.id));
+        // Merge: actuales + fijados fuera de ventana
+        const currentIds = new Set(S.procs.all.map(p => p.id));
+        const visible = [...S.procs.all.filter(p => !S.procs.ignored.has(p.id))];
+        for (const [id, data] of S.procs.pinnedData) {
+            if (!currentIds.has(id) && !S.procs.ignored.has(id)) {
+                visible.push(data);
+            }
+        }
 
         for (const p of visible) {
-            // Geocoding LOCAL instantáneo (índice de cámaras)
-            const coords = GEO.geocode(p.dir);
+            const coords = resolveCoords(p.id, p.internalId);
 
             if (coords) {
                 agregarMarcadorProc(p.id, coords, p);
             } else {
-                // Registrar sin coords — panel funcional, mapa pendiente
                 S.procs.markers.set(p.id, { marker: null, coords: null, proc: p });
-                // Encolar Nominatim fallback (async, no bloquea UI)
-                if (p.dir) GEO.enqueueNominatim(p.dir, p.id);
             }
         }
 
@@ -3333,20 +3381,20 @@
 
         const isPendiente = p.estado === 'PENDIENTE';
         const marker = L.circleMarker(coords, {
-            radius: isPendiente ? 8 : 5,
+            radius: isPendiente ? 10 : 7,
             fillColor: p.cat.border,
             fillOpacity: isPendiente ? 0.85 : 0.35,
             color: isPendiente ? '#fff' : 'rgba(255,255,255,.3)',
-            weight: isPendiente ? 2 : 1,
+            weight: isPendiente ? 2.5 : 1.5,
             pane: 'procPane',
         }).addTo(S.layers.proc);
 
         const hora = p.fecha.match(/\d{2}:\d{2}/)?.[0] || p.fecha;
         marker.bindPopup(`
             <div>
-                <div style="font:700 13px -apple-system,sans-serif;color:${p.cat.border};margin-bottom:2px">ID: ${esc(p.id)}</div>
-                <div style="color:rgba(255,255,255,.6);font-size:11px;margin-bottom:2px">📍 ${esc(p.dir)}</div>
-                <div style="font-size:10px;color:rgba(255,255,255,.4)">🕐 ${esc(hora)} · ${esc(p.tipo)}${isPendiente ? '' : ' · CERRADO'}</div>
+                <div style="font:700 15px -apple-system,sans-serif;color:${p.cat.border};margin-bottom:3px">ID: ${esc(p.id)}</div>
+                <div style="color:rgba(255,255,255,.6);font-size:13px;margin-bottom:3px">📍 ${esc(p.dir)}</div>
+                <div style="font-size:12px;color:rgba(255,255,255,.4)">🕐 ${esc(hora)} · ${esc(p.tipo)}${isPendiente ? '' : ' · CERRADO'}</div>
             </div>
         `, { className: 'mi-proc-popup', closeButton: false, autoPan: false });
 
@@ -3479,7 +3527,17 @@
         if (!container) return;
 
         container.querySelector('#mi-spinner')?.classList.add('on');
-        const { procs, live } = await fetchProcedimientos();
+
+        // Fetch procedimientos + coordenadas en paralelo
+        const [{ procs, live }, serverCoords] = await Promise.all([
+            fetchProcedimientos(),
+            fetchIncidentMapCoords(),
+        ]);
+
+        // Merge coords del servidor (sin sobrescribir las existentes para proc fijados)
+        for (const [id, coords] of serverCoords) {
+            S.procs.serverCoords.set(id, coords);
+        }
 
         const modeEl = container.querySelector('#mi-mode');
         if (live && procs.length > 0) {
@@ -3555,16 +3613,13 @@
         S.cameras.data = await fetchCamaras();
         S.cameras.loaded = true;
 
-        // ── Construir geocoder local desde cámaras (~984 calles, <5ms) ──
-        GEO.buildIndex(S.cameras.data);
-
         S.cameras.data.forEach(cam => {
             const pg = cam.programa || 'R';
             const color = PROG_COLOR[pg] || '#3b82f6';
             const border = PROG_BORDER[pg] || '#1d4ed8';
             const short = codigoCorto(cam);
 
-            const size = 11;
+            const size = 13;
             const icon = L.divIcon({
                 className: '',
                 html: `<div style="width:${size}px;height:${size}px;background:${color};border:1.5px solid ${border};opacity:0.75;border-radius:1px;cursor:pointer;transition:transform .1s;"></div>`,
@@ -3579,7 +3634,7 @@
             popupDiv.style.cssText = 'text-align:center;min-width:50px';
 
             const codeEl = document.createElement('div');
-            codeEl.style.cssText = `font:700 13px -apple-system,sans-serif;color:${color};cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.2);padding-bottom:2px`;
+            codeEl.style.cssText = `font:700 15px -apple-system,sans-serif;color:${color};cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.2);padding-bottom:2px`;
             codeEl.textContent = short;
             codeEl.addEventListener('click', () => {
                 navigator.clipboard.writeText(short).then(() => {
@@ -3592,7 +3647,7 @@
 
             if (cam.dir) {
                 const dirEl = document.createElement('div');
-                dirEl.style.cssText = 'font-size:9px;color:rgba(255,255,255,.35);margin-top:2px';
+                dirEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,.35);margin-top:3px';
                 dirEl.textContent = cam.dir;
                 popupDiv.appendChild(dirEl);
             }
@@ -3720,7 +3775,9 @@
             // Escape
             if (key === 'escape') {
                 e.preventDefault();
-                if (S.draw.mode) {
+                if (S.placement.active) {
+                    cancelarPlacement();
+                } else if (S.draw.mode) {
                     desactivarDibujo();
                 } else {
                     S.map.closePopup();
@@ -3772,10 +3829,10 @@
         S.cameras.loaded = false;
         S.procs.all = [];
         S.procs.markers.clear();
-        // Detener Nominatim en curso
-        GEO.nominatimQueue.length = 0;
-        // No limpiar procs.ignored — persiste entre activaciones
-        // No limpiar GEO.cache ni streetIndex — persiste para re-activaciones
+        // Cancelar placement mode
+        S.placement.active = false;
+        S.placement.procId = null;
+        // No limpiar procs.ignored, pinned, pinnedData, manualCoords, serverCoords — persisten entre activaciones
         S.refresh.countdown = 0;
         S.ui.container = null;
 
@@ -3818,6 +3875,6 @@
     inyectarBoton();
     checkHash();
 
-    console.log('[MapaIntegrado] ✅ v3.0 cargado. Usa #mapa-integrado para activar.');
+    console.log('[MapaIntegrado] ✅ v3.2 cargado. Usa #mapa-integrado para activar.');
 
 })();
