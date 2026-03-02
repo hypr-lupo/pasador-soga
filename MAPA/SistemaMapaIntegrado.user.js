@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema Mapa Integrado
 // @namespace    http://tampermonkey.net/
-// @version      4.2
+// @version      5.0
 // @description  Mapa Leaflet integrado con procedimientos en vivo y panel Última Hora. Accesible via #mapa-integrado
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
@@ -63,7 +63,7 @@
         // Procedimientos
         procs: { all: [], markers: new Map(), ignored: new Set(), pinned: new Set(), pinnedData: new Map(), manualCoords: new Map(), serverCoords: new Map() },
         // Cámaras
-        cameras: { data: [], loaded: false },
+        cameras: { data: [], sites: [], loaded: false },
         // Refresh
         refresh: { timer: null, countdown: 0 },
         // Navegación WASD
@@ -4268,6 +4268,21 @@
         }));
     }
 
+    /** Agrupa cámaras por coordenada exacta → 1 sitio = 1 marcador */
+    function groupCamerasBySite(cams) {
+        const map = new Map();
+        for (const cam of cams) {
+            const key = cam.lat + ',' + cam.lng;
+            let site = map.get(key);
+            if (!site) {
+                site = { lat: cam.lat, lng: cam.lng, dir: cam.dir, cams: [], programa: cam.programa };
+                map.set(key, site);
+            }
+            site.cams.push(cam);
+        }
+        return Array.from(map.values());
+    }
+
     /** Fetch cámaras: intenta FeatureServer, fallback a datos embebidos */
     async function fetchCamaras() {
         if (CONFIG.CAMARAS_FEATURESERVER) {
@@ -4412,8 +4427,11 @@
             .mi-card:hover { filter:brightness(1.3); }
             .mi-card.closed { opacity:0.45; }
             .mi-card.closed:hover { opacity:0.7; }
+            .mi-card.ignored { opacity:0.3; }
+            .mi-card.ignored:hover { opacity:0.5; }
             .mi-card.pinned { border-left-color:#fbbf24!important; box-shadow:inset 0 0 0 1px rgba(251,191,36,.15); }
             .mi-sec.pinned-sec { color:rgba(251,191,36,.6); background:rgba(251,191,36,.04); }
+            .mi-sec.ignored-sec { color:rgba(255,255,255,.25); background:rgba(255,255,255,.02); }
             .mi-card.new { animation:mi-flash .6s ease 2; }
             @keyframes mi-flash { 0%,100%{background:transparent} 50%{background:rgba(251,191,36,.1)} }
 
@@ -4456,6 +4474,36 @@
             .mi-card-btns button[data-action="locate"]:hover { background:rgba(251,191,36,.25); }
             .mi-card-btns button[data-action="ignore"] { margin-left:auto; color:rgba(255,255,255,.3); }
             .mi-card-btns button[data-action="ignore"]:hover { color:#f87171; background:rgba(239,68,68,.12); border-color:rgba(239,68,68,.2); }
+
+            /* ═══ SWITCH TV/PC ═══ */
+            #mi-view-switch {
+                display:flex; justify-content:flex-end; gap:0; padding:4px 10px 2px;
+                flex-shrink:0;
+            }
+            #mi-view-switch button {
+                background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.1);
+                color:rgba(255,255,255,.35);
+                font:600 10px -apple-system,sans-serif; padding:2px 10px; cursor:pointer;
+                transition:all .12s; letter-spacing:.3px;
+            }
+            #mi-view-switch button:first-child { border-radius:3px 0 0 3px; border-right:none; }
+            #mi-view-switch button:last-child { border-radius:0 3px 3px 0; }
+            #mi-view-switch button:hover { color:rgba(255,255,255,.6); }
+            #mi-view-switch button.active { background:rgba(59,130,246,.25); color:#60a5fa; }
+
+            /* ── Modo compacto (PC) ── */
+            #mi-panel.compact .mi-sec { padding:4px 14px; font-size:10px; }
+            #mi-panel.compact .mi-card { padding:5px 12px; margin:0 4px 3px; border-radius:4px; border-left-width:3px; }
+            #mi-panel.compact .mi-card-top { margin-bottom:1px; gap:4px; }
+            #mi-panel.compact .mi-card-tipo { font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+            #mi-panel.compact .mi-card-est { font-size:8px; padding:1px 5px; }
+            #mi-panel.compact .mi-card-info { margin-bottom:1px; gap:4px; }
+            #mi-panel.compact .mi-card-hora { font-size:11px; }
+            #mi-panel.compact .mi-card-id { font-size:10px; }
+            #mi-panel.compact .mi-card-dir { font-size:11px; margin-bottom:0; }
+            #mi-panel.compact .mi-card-desc { display:none; }
+            #mi-panel.compact .mi-card-btns { margin-top:3px; gap:2px; }
+            #mi-panel.compact .mi-card-btns button { padding:2px 6px; font-size:10px; }
 
             /* ═══ PLACEMENT MODE ═══ */
             #mi-placement-banner {
@@ -4573,6 +4621,10 @@
 
             <!-- PANEL -->
             <div id="mi-panel">
+                <div id="mi-view-switch">
+                    <button data-view="tv" class="active" title="TV: cards grandes">TV</button>
+                    <button data-view="pc" title="PC: cards compactas">PC</button>
+                </div>
                 <div id="mi-panel-body"></div>
             </div>
             <button id="mi-panel-toggle">◀</button>
@@ -4858,6 +4910,7 @@
         const hora = p.fecha.match(/\d{2}:\d{2}/)?.[0] || p.fecha;
         const isPendiente = p.estado === 'PENDIENTE';
         const isPinned = S.procs.pinned.has(p.id);
+        const isIgnored = S.procs.ignored.has(p.id);
         const hasCoords = !!resolveCoords(p.id, p.internalId);
         const dirIcon = hasCoords ? '📍' : '<span style="color:rgba(251,191,36,.6)">⚠</span>';
         const dirLine = p.dir
@@ -4866,8 +4919,11 @@
         const descLine = p.desc ? `<div class="mi-card-desc" data-tooltip="${esc(p.desc)}">${esc(p.desc)}</div>` : '';
         const idDisplay = p.id.length > 4 ? p.id.slice(0, -4) + ' ' + p.id.slice(-4) : p.id;
         const detailUrl = p.internalId ? `/incidents/${p.internalId}` : '';
+        const ignoreBtn = isIgnored
+            ? `<button data-action="restore" data-id="${esc(p.id)}" style="color:#34d399">↩</button>`
+            : `<button data-action="ignore" data-id="${esc(p.id)}">✕</button>`;
         return `
-            <div class="mi-card${isPendiente ? '' : ' closed'}${isPinned ? ' pinned' : ''}" data-id="${esc(p.id)}" style="border-left-color:${isPendiente ? p.cat.border : 'transparent'};background:${p.cat.color}">
+            <div class="mi-card${isPendiente ? '' : ' closed'}${isPinned ? ' pinned' : ''}${isIgnored ? ' ignored' : ''}" data-id="${esc(p.id)}" style="border-left-color:${isPendiente && !isIgnored ? p.cat.border : 'transparent'};background:${p.cat.color}">
                 <div class="mi-card-top">
                     <span class="mi-card-tipo" style="color:${p.cat.border}">${esc(p.tipo)}</span>
                     <div class="mi-card-right">
@@ -4886,7 +4942,7 @@
                     ${detailUrl ? `<button data-action="detail" data-url="${esc(detailUrl)}">ℹ️</button>` : ''}
                     <button data-action="arcgis" data-dir="${esc(p.dir)}" data-pid="${esc(p.id)}">🗺️</button>
                     <button data-action="gmaps" data-dir="${esc(p.dir)}">📍</button>
-                    <button data-action="ignore" data-id="${esc(p.id)}">✕</button>
+                    ${ignoreBtn}
                 </div>
             </div>`;
     }
@@ -4934,6 +4990,10 @@
         if (cerrados.length > 0) {
             html += `<div class="mi-sec">Cerrados (${cerrados.length})</div>`;
             html += cerrados.map(cardHTML).join('');
+        }
+        if (ignorados.length > 0) {
+            html += `<div class="mi-sec ignored-sec">✕ Ignorados (${ignorados.length})</div>`;
+            html += ignorados.map(cardHTML).join('');
         }
         if (!html) {
             html = '<div style="padding:30px;text-align:center;color:rgba(255,255,255,.2);font-size:11px">Sin procedimientos recientes</div>';
@@ -5028,6 +5088,21 @@
                     }
                     S.procs.markers.delete(id);
                     S.layers.nearby?.clearLayers();
+                    renderPanel();
+                    renderPanelGeoStatus();
+                    return;
+                }
+
+                if (action === 'restore') {
+                    e.stopPropagation();
+                    const id = actionEl.dataset.id;
+                    S.procs.ignored.delete(id);
+                    // Re-crear marcador si hay datos y coordenadas
+                    const proc = S.procs.all.find(p => p.id === id);
+                    if (proc) {
+                        const coords = resolveCoords(proc.id, proc.internalId);
+                        if (coords) agregarMarcadorProc(proc.id, coords, proc);
+                    }
                     renderPanel();
                     renderPanelGeoStatus();
                     return;
@@ -5324,14 +5399,14 @@
 
     function mostrarCamarasCercanas(coords, radioMetros = CONFIG.NEARBY_RADIUS) {
         S.layers.nearby.clearLayers();
-        if (!S.cameras.data.length) return;
+        if (!S.cameras.sites.length) return;
 
-        const cercanas = S.cameras.data
-            .map(cam => ({ ...cam, dist: haversine(coords[0], coords[1], cam.lat, cam.lng) }))
-            .filter(cam => cam.dist <= radioMetros)
+        const cercanos = S.cameras.sites
+            .map(site => ({ ...site, dist: haversine(coords[0], coords[1], site.lat, site.lng) }))
+            .filter(site => site.dist <= radioMetros)
             .sort((a, b) => a.dist - b.dist);
 
-        if (!cercanas.length) return;
+        if (!cercanos.length) return;
 
         L.circle(coords, {
             radius: radioMetros,
@@ -5342,11 +5417,15 @@
         }).addTo(S.layers.nearby);
 
         const dirs = ['top', 'right', 'bottom', 'left'];
-        cercanas.forEach((cam, idx) => {
-            const pg = cam.programa || 'R';
+        cercanos.forEach((site, idx) => {
+            const pg = site.programa || 'R';
             const color = PROG_COLOR[pg] || '#3b82f6';
-            const dist = Math.round(cam.dist);
-            const short = codigoCorto(cam);
+            const dist = Math.round(site.dist);
+            // Mostrar código corto de la primera cámara + cantidad si hay más
+            const mainShort = codigoCorto(site.cams[0]);
+            const label = site.cams.length > 1
+                ? `${mainShort} <span style="font-size:8px;opacity:.5">+${site.cams.length - 1}</span>`
+                : mainShort;
 
             const icon = L.divIcon({
                 className: '',
@@ -5354,21 +5433,22 @@
                 iconSize: [10, 10],
                 iconAnchor: [5, 5],
             });
-            const nearMarker = L.marker([cam.lat, cam.lng], { icon, interactive: true }).addTo(S.layers.nearby);
+            const nearMarker = L.marker([site.lat, site.lng], { icon, interactive: true }).addTo(S.layers.nearby);
 
             const dir = dirs[idx % dirs.length];
             const off = dir === 'top' ? [0, -8] : dir === 'bottom' ? [0, 8] : dir === 'right' ? [8, 0] : [-8, 0];
-            const content = `<span class="mi-nearby-square" style="background:${color}"></span><strong>${esc(short)}</strong> <span style="font-size:8px;color:rgba(255,255,255,.3)">${dist}m</span>`;
+            const content = `<span class="mi-nearby-square" style="background:${color}"></span><strong>${label}</strong> <span style="font-size:8px;color:rgba(255,255,255,.3)">${dist}m</span>`;
 
             nearMarker.bindTooltip(content, {
                 permanent: true, direction: dir, offset: off,
                 className: 'mi-nearby-label', interactive: true,
             });
 
-            // Click copia código
+            // Click copia todos los códigos del sitio
             nearMarker.on('click', () => {
-                navigator.clipboard.writeText(short).then(() => {
-                    nearMarker.setTooltipContent(`<span style="color:#34d399">✓ ${esc(short)}</span>`);
+                const allCodes = site.cams.map(c => codigoCorto(c)).join(', ');
+                navigator.clipboard.writeText(allCodes).then(() => {
+                    nearMarker.setTooltipContent(`<span style="color:#34d399">✓ ${esc(mainShort)}</span>`);
                     setTimeout(() => nearMarker.setTooltipContent(content), 800);
                 });
             });
@@ -5496,57 +5576,75 @@
         S.map.createPane('camPane');
         S.map.getPane('camPane').style.zIndex = 450;
         S.map.createPane('camPopupPane');
-        S.map.getPane('camPopupPane').style.zIndex = 700; // sobre popups de proc (650)
+        S.map.getPane('camPopupPane').style.zIndex = 700;
+
+        // Canvas renderer — cámaras sin DOM individual (~2573 markers canvas vs 3832 divIcons SVG)
+        const camRenderer = L.canvas({ pane: 'camPane', padding: 0.3 });
 
         S.layers.proc = L.layerGroup().addTo(S.map);
         S.layers.cam = L.layerGroup().addTo(S.map);
         S.layers.nearby = L.layerGroup().addTo(S.map);
         S.layers.draw = L.layerGroup().addTo(S.map);
 
-        // ── Cámaras ──
+        // ── Cámaras (agrupadas por sitio) ──
         S.cameras.data = await fetchCamaras();
+        S.cameras.sites = groupCamerasBySite(S.cameras.data);
         S.cameras.loaded = true;
 
-        S.cameras.data.forEach(cam => {
-            const pg = cam.programa || 'R';
+        S.cameras.sites.forEach(site => {
+            const pg = site.programa || 'R';
             const color = PROG_COLOR[pg] || '#3b82f6';
-            const border = PROG_BORDER[pg] || '#1d4ed8';
-            const short = codigoCorto(cam);
 
-            const size = 13;
-            const icon = L.divIcon({
-                className: '',
-                html: `<div style="width:${size}px;height:${size}px;background:${color};border:1.5px solid ${border};opacity:0.75;border-radius:1px;cursor:pointer;transition:transform .1s;"></div>`,
-                iconSize: [size, size],
-                iconAnchor: [size / 2, size / 2],
-            });
+            const marker = L.circleMarker([site.lat, site.lng], {
+                renderer: camRenderer,
+                radius: 5,
+                fillColor: color,
+                fillOpacity: 0.7,
+                color: '#fff',
+                weight: 1,
+                opacity: 0.5,
+            }).addTo(S.layers.cam);
 
-            const marker = L.marker([cam.lat, cam.lng], { icon, pane: 'camPane' }).addTo(S.layers.cam);
-
-            // Popup con event delegation seguro (sin inline onclick)
-            const popupDiv = document.createElement('div');
-            popupDiv.style.cssText = 'text-align:center;min-width:50px';
-
-            const codeEl = document.createElement('div');
-            codeEl.style.cssText = `font:700 15px -apple-system,sans-serif;color:${color};cursor:pointer;border-bottom:1px dashed rgba(255,255,255,.2);padding-bottom:2px`;
-            codeEl.textContent = short;
-            codeEl.addEventListener('click', () => {
-                navigator.clipboard.writeText(short).then(() => {
-                    codeEl.style.color = '#34d399';
-                    codeEl.textContent = '✓';
-                    setTimeout(() => { codeEl.style.color = color; codeEl.textContent = short; }, 800);
-                });
-            });
-            popupDiv.appendChild(codeEl);
-
-            if (cam.dir) {
-                const dirEl = document.createElement('div');
-                dirEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,.35);margin-top:3px';
-                dirEl.textContent = cam.dir;
-                popupDiv.appendChild(dirEl);
+            // Badge: cantidad de cámaras si > 1
+            if (site.cams.length > 1) {
+                marker.setRadius(6);
+                marker.setStyle({ weight: 1.5, opacity: 0.7 });
             }
 
-            marker.bindPopup(popupDiv, { closeButton: false, className: 'mi-cam-popup', pane: 'camPopupPane' });
+            // Lazy popup — se construye solo al primer mouseover
+            let popupReady = false;
+            marker.on('mouseover', function () {
+                if (popupReady) { marker.openPopup(); return; }
+                popupReady = true;
+                const popupDiv = document.createElement('div');
+                popupDiv.style.cssText = 'text-align:center;min-width:60px;max-width:220px';
+
+                site.cams.forEach((cam, i) => {
+                    const short = codigoCorto(cam);
+                    const camColor = PROG_COLOR[cam.programa] || '#3b82f6';
+                    const row = document.createElement('div');
+                    row.style.cssText = `font:700 13px -apple-system,sans-serif;color:${camColor};cursor:pointer;padding:2px 0;${i > 0 ? 'border-top:1px solid rgba(255,255,255,.08)' : ''}`;
+                    row.textContent = short + (cam.tipo ? ` · ${cam.tipo}` : '');
+                    row.addEventListener('click', () => {
+                        navigator.clipboard.writeText(short).then(() => {
+                            row.style.color = '#34d399'; row.textContent = '✓ ' + short;
+                            setTimeout(() => { row.style.color = camColor; row.textContent = short + (cam.tipo ? ` · ${cam.tipo}` : ''); }, 800);
+                        });
+                    });
+                    popupDiv.appendChild(row);
+                });
+
+                if (site.dir) {
+                    const dirEl = document.createElement('div');
+                    dirEl.style.cssText = 'font-size:11px;color:rgba(255,255,255,.35);margin-top:3px';
+                    dirEl.textContent = site.dir;
+                    popupDiv.appendChild(dirEl);
+                }
+
+                marker.bindPopup(popupDiv, { closeButton: false, className: 'mi-cam-popup', pane: 'camPopupPane' });
+                marker.openPopup();
+            });
+            marker.on('mouseout', function () { marker.closePopup(); });
         });
 
         // ── Dibujo ──
@@ -5558,6 +5656,16 @@
             const panel = container.querySelector('#mi-panel');
             panel.classList.toggle('collapsed');
             container.querySelector('#mi-panel-toggle').textContent = panel.classList.contains('collapsed') ? '▶' : '◀';
+        }, { signal });
+
+        // ── Switch TV/PC ──
+        container.querySelector('#mi-view-switch').addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-view]');
+            if (!btn) return;
+            const panel = container.querySelector('#mi-panel');
+            container.querySelectorAll('#mi-view-switch button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            panel.classList.toggle('compact', btn.dataset.view === 'pc');
         }, { signal });
 
         // ── Panel delegation ──
@@ -5720,6 +5828,7 @@
         if (S.map) { S.map.remove(); S.map = null; }
         S.layers = { proc: null, cam: null, nearby: null, draw: null };
         S.cameras.data = [];
+        S.cameras.sites = [];
         S.cameras.loaded = false;
         S.procs.all = [];
         S.procs.markers.clear();
