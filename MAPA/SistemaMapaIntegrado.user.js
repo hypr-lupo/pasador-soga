@@ -5225,7 +5225,7 @@
             .mi-card-est.p { background:rgba(239,68,68,.15); color:#f87171; }
             .mi-card-est.c { background:rgba(96,165,250,.12); color:#60a5fa; }
             .mi-card-id {
-                font:500 12px 'SF Mono',Consolas,monospace; color:rgba(255,255,255,.5);
+                font:500 16px 'SF Mono',Consolas,monospace; color:rgba(255,255,255,.5);
                 cursor:pointer; transition:color .12s; letter-spacing:.3px; margin-left:auto;
             }
             .mi-card-id:hover { color:#60a5fa; text-decoration:underline; }
@@ -5279,7 +5279,7 @@
             #mi-panel.compact .mi-card-est { font-size:8px; padding:1px 5px; }
             #mi-panel.compact .mi-card-info { margin-bottom:1px; gap:4px; }
             #mi-panel.compact .mi-card-hora { font-size:11px; }
-            #mi-panel.compact .mi-card-id { font-size:10px; }
+            #mi-panel.compact .mi-card-id { font-size:16px; }
             #mi-panel.compact .mi-card-dir { font-size:11px; margin-bottom:0; }
             #mi-panel.compact .mi-card-desc { display:none; }
             #mi-panel.compact .mi-card-btns { margin-top:3px; gap:2px; }
@@ -5322,14 +5322,15 @@
 
             /* ═══ NEARBY CAMERA LABELS ═══ */
             .mi-nearby-label {
-                background:rgba(0,0,0,.85); backdrop-filter:blur(6px);
-                border-radius:4px; padding:4px 8px;
+                background:rgba(0,0,0,.85) !important; backdrop-filter:blur(6px);
+                border-radius:4px !important; padding:4px 8px !important;
                 font:700 12px -apple-system,sans-serif; color:#fff !important;
                 white-space:nowrap; pointer-events:none;
-                border:1px solid rgba(255,255,255,.15);
-                box-shadow:0 2px 8px rgba(0,0,0,.5);
-                line-height:1.3;
+                border:1px solid rgba(255,255,255,.15) !important;
+                box-shadow:0 2px 8px rgba(0,0,0,.5) !important;
+                line-height:1.3; opacity:1 !important;
             }
+            .mi-nearby-label::before { border:none !important; display:none !important; }
             .mi-nearby-label * { color:inherit; }
             .mi-nearby-square {
                 display:inline-block; width:8px; height:8px;
