@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Sistema Mapa Integrado
 // @namespace    http://tampermonkey.net/
-// @version      5.1
+// @version      5.3
 // @description  Mapa Leaflet integrado con procedimientos en vivo y panel Última Hora. Accesible via #mapa-integrado
 // @author       Leonardo Navarro (hypr-lupo)
 // @copyright    2025-2026 Leonardo Navarro
