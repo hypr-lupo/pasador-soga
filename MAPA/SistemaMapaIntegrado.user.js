@@ -6659,6 +6659,6 @@
     inyectarBoton();
     checkHash();
 
-    console.log('[MapaIntegrado] ✅ v5.2 cargado. Usa #mapa-integrado para activar.');
+    console.log('[MapaIntegrado] ✅ v3.2 cargado. Usa #mapa-integrado para activar.');
 
 })();
